@@ -1,0 +1,1195 @@
+:root {
+  color-scheme: light dark;
+
+  --oc-accent: #e5534b;
+
+  /* Input panel, mirroring Claude Code's own composer: a muted theme border at
+     rest, and on focus the theme's focus colour plus a soft halo. */
+  --oc-input-border: var(--vscode-inlineChatInput-border, var(--vscode-input-border, var(--vscode-widget-border, rgba(127, 127, 127, 0.4))));
+  --oc-focus-ring: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder, #0078d4));
+
+  /* Timeline dot colours, one per kind of entry. */
+  --oc-dot-user: #4a9eff;
+  --oc-dot-assistant: #3fb950;
+  --oc-dot-thinking: #a371f7;
+  --oc-dot-tool: #d29922;
+  --oc-dot-error: #f85149;
+  --oc-dot-stopped: #8b949e;
+  --oc-rail: var(--vscode-panel-border);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  position: relative; /* anchor for the drop-down panels below the title bar */
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background);
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+/* ------------------------------------------------------------------ titlebar */
+
+.titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  user-select: none;
+}
+
+.titlebar .brand {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.8;
+  max-width: 55%;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Once the session has a real name, show it as written rather than shouted. */
+.titlebar .brand.named {
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 1;
+}
+
+.titlebar .brand:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.title-input {
+  max-width: 55%;
+  padding: 2px 4px;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  outline: none;
+}
+
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  background: transparent;
+  opacity: 0.75;
+}
+
+.iconbtn:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.iconbtn.on {
+  opacity: 1;
+  color: var(--vscode-charts-yellow, #e2b93d);
+}
+
+.iconbtn.on svg path {
+  fill: currentColor;
+}
+
+/* ------------------------------------------------------------- sessions panel */
+
+.panel {
+  position: absolute;
+  top: 38px; /* clears the title bar (4 + 28 + 4 padding + 1 border) */
+  left: 6px;
+  right: 6px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 56vh;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background, var(--vscode-sideBar-background)));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  animation: paneldrop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes paneldrop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.panel-search {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 7px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.panel-search:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.panel-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.panel-empty {
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.panel-head {
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.session-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.session-row.current {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.session-pin {
+  flex: 0 0 auto;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 12px;
+}
+
+.session-pin:hover {
+  opacity: 1;
+}
+
+.session-pin.on {
+  opacity: 1;
+  color: var(--vscode-charts-yellow, #e2b93d);
+}
+
+.session-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-meta {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.6;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Delete affordance: hidden until the row is hovered. */
+.session-del {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border-radius: 3px;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.session-row:hover .session-del {
+  opacity: 0.55;
+}
+
+.session-del:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-errorForeground);
+}
+
+/* bookmarked responses panel */
+
+.bk-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.bk-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bk-meta {
+  font-size: 10px;
+  opacity: 0.6;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------- status */
+
+.status {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status:empty {
+  display: none;
+}
+
+.status.error {
+  color: var(--vscode-errorForeground);
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------- timeline */
+
+.messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px 10px 4px;
+}
+
+.tl {
+  position: relative;
+  padding-left: 20px;
+  margin-bottom: 12px;
+}
+
+/* Continuous rail between entries; hidden on the last one so it does not trail. */
+.tl::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 5px;
+  bottom: -12px;
+  width: 1px;
+  background: var(--oc-rail);
+}
+
+.tl:last-child::before {
+  display: none;
+}
+
+.tl-dot {
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  box-shadow: 0 0 0 2px var(--vscode-sideBar-background);
+}
+
+.kind-user .tl-dot {
+  background: var(--oc-dot-user);
+}
+
+.kind-assistant .tl-dot {
+  background: var(--oc-dot-assistant);
+}
+
+.kind-thinking .tl-dot {
+  background: var(--oc-dot-thinking);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.kind-tool.tool-running .tl-dot {
+  background: var(--oc-dot-tool);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.kind-tool.tool-ok .tl-dot {
+  background: var(--oc-dot-assistant);
+}
+
+.kind-tool.tool-error .tl-dot,
+.kind-error .tl-dot {
+  background: var(--oc-dot-error);
+}
+
+/* The agent waiting on you: amber, pulsing until answered. */
+.kind-permission .tl-dot,
+.kind-form .tl-dot {
+  background: var(--oc-dot-tool);
+}
+
+.kind-permission.pending .tl-dot,
+.kind-form.pending .tl-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.6;
+  }
+}
+
+.tl-body {
+  min-width: 0;
+}
+
+/* Highlight applied briefly after jumping to a bookmarked response. */
+.tl.flash .tl-body {
+  border-radius: 6px;
+  animation: flash 1.6s ease;
+}
+
+@keyframes flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(226, 185, 61, 0);
+    background-color: transparent;
+  }
+  20% {
+    box-shadow: 0 0 0 3px rgba(226, 185, 61, 0.35);
+    background-color: rgba(226, 185, 61, 0.14);
+  }
+}
+
+.kind-user .tl-body {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 7px;
+  padding: 5px 8px;
+}
+
+.kind-error .tl-text {
+  color: var(--vscode-errorForeground);
+}
+
+.tl-files {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Day divider: ~~~~~~~~ 2026-10-11 ~~~~~~~~ */
+.tl-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 9px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+  user-select: none;
+}
+
+.tl-date::before,
+.tl-date::after {
+  content: '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~';
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Time of a prompt / the start of a response, right-aligned. */
+/* Matches Claude Code's per-item timestamp (.itemTime): the muted
+   descriptionForeground at full opacity, with no extra dimming. */
+.tl-time {
+  width: 100%;
+  text-align: right;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-text.plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+/* ---- rendered markdown ---- */
+
+.tl-text.md {
+  white-space: normal;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.tl-text.md > *:first-child {
+  margin-top: 0;
+}
+
+.tl-text.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.tl-text.md p {
+  margin: 0 0 8px;
+}
+
+.tl-text.md h1,
+.tl-text.md h2,
+.tl-text.md h3,
+.tl-text.md h4,
+.tl-text.md h5,
+.tl-text.md h6 {
+  margin: 12px 0 6px;
+  font-size: 1.05em;
+  font-weight: 600;
+}
+
+.tl-text.md ul,
+.tl-text.md ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.tl-text.md li {
+  margin: 2px 0;
+}
+
+.tl-text.md blockquote {
+  margin: 0 0 8px;
+  padding-left: 8px;
+  border-left: 2px solid var(--vscode-panel-border);
+  opacity: 0.9;
+}
+
+.tl-text.md hr {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border);
+  margin: 10px 0;
+}
+
+.tl-text.md code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.94em;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.tl-text.md pre.code {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.tl-text.md pre.code code {
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+/* File links inside a code span should still read as clickable. */
+.tl-text.md code a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tl-text.md code a:hover {
+  text-decoration: underline;
+}
+
+.tl-text.md a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tl-text.md a:hover {
+  text-decoration: underline;
+}
+
+.tl-text.md strong {
+  font-weight: 600;
+}
+
+/* ---- tool rows ---- */
+
+.tl-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.tool-name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.tool-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  opacity: 0.8;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tool-detail:empty {
+  display: none;
+}
+
+.tool-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.tool-error .tool-state {
+  color: var(--vscode-errorForeground);
+  opacity: 1;
+}
+
+/* ---- response actions ---- */
+
+.tl-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.tl-actions .act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  background: transparent;
+  opacity: 0.55;
+}
+
+.tl-actions .act:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.tl-actions .act.on {
+  opacity: 1;
+  color: var(--vscode-charts-yellow, #e2b93d);
+}
+
+.tl-actions .act.on svg path {
+  fill: currentColor;
+}
+
+/* ---- inline ask cards (permission / form) ---- */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--oc-dot-tool);
+  background: color-mix(in srgb, var(--oc-dot-tool) 10%, transparent);
+}
+
+.kind-permission.settled .card,
+.kind-form.settled .card {
+  border-color: var(--vscode-panel-border);
+  background: transparent;
+}
+
+.card-title {
+  font-weight: 600;
+}
+
+.card-detail {
+  font-size: 11px;
+  opacity: 0.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-settled {
+  font-size: 11px;
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.card-field-label {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.card-field input[type='text'],
+.card-field select {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 5px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.card-field select[multiple] {
+  min-height: 60px;
+}
+
+.card-field input[type='checkbox'] {
+  align-self: flex-start;
+}
+
+/* ---- thinking ---- */
+
+.tl-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thinking-word {
+  display: inline-block;
+  font-size: 12px;
+}
+
+.thinking-word.swap {
+  animation: wordswap 0.36s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.thinking-ellipsis {
+  font-size: 12px;
+  margin-left: -6px;
+  opacity: 0.6;
+}
+
+@keyframes wordswap {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: bounce 1.2s ease-in-out infinite;
+}
+
+.dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes bounce {
+  0%,
+  70%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  35% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* -------------------------------------------------------------------- composer */
+
+.composer {
+  flex: 0 0 auto;
+  padding: 6px 8px 8px;
+}
+
+.composer-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 8px 6px;
+  border-radius: 14px;
+  border: 1px solid var(--oc-input-border);
+  background: var(--vscode-input-background);
+  box-shadow: 0 1px 2px #0000001a;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Focused: the ring colour on the border, a 3px tinted halo, and a warm drop
+   shadow — the same three-part treatment as Claude Code's own composer. */
+.composer-panel:focus-within {
+  border-color: var(--oc-focus-ring);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--oc-focus-ring) 12%, transparent),
+    0 1px 2px color-mix(in srgb, var(--oc-focus-ring), transparent 80%);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chips:empty {
+  display: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.chip.auto {
+  opacity: 0.9;
+  font-style: italic;
+}
+
+.chip .x {
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.chip .x:hover {
+  opacity: 1;
+}
+
+textarea#input {
+  width: 100%;
+  resize: none;
+  min-height: 28px;
+  max-height: 200px;
+  padding: 2px 4px;
+  border: none;
+  outline: none;
+  color: var(--vscode-input-foreground);
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.4;
+  overflow-y: auto;
+}
+
+textarea#input::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+
+/* The bottom bar (model, agents, send) is separated from the prompt itself. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--oc-input-border);
+}
+
+/* ---- model picker ---- */
+
+.model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 68%;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 11px;
+  opacity: 0.8;
+  overflow: hidden;
+}
+
+.model-btn:hover,
+.model-btn.open {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.18));
+  border-color: var(--vscode-panel-border);
+}
+
+.model-btn #model-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.model-btn .chev {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.model-btn.open .chev {
+  transform: rotate(180deg);
+}
+
+.model-menu {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background, var(--vscode-sideBar-background)));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  animation: menuin 0.14s ease;
+}
+
+@keyframes menuin {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.model-empty {
+  padding: 6px 8px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.model-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.model-item.current {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.model-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.model-prov {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+.model-check {
+  flex: 0 0 auto;
+  opacity: 0;
+}
+
+.model-item.current .model-check {
+  opacity: 1;
+}
+
+/* ---- agent map ---- */
+
+.agents-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 11px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.agents-btn:hover,
+.agents-btn.open {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.18));
+  border-color: var(--vscode-panel-border);
+}
+
+.agents-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--oc-dot-stopped);
+}
+
+.agents-dot.running {
+  background: var(--oc-dot-assistant);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.agents-panel {
+  max-height: 320px;
+}
+
+.agent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.agent-row.main {
+  font-weight: 600;
+}
+
+/* Subagents hang off the main agent with a short connector. */
+.agent-row.sub {
+  margin-left: 12px;
+  border-left: 1px solid var(--oc-rail);
+  border-radius: 0 6px 6px 0;
+  font-weight: 400;
+}
+
+.agent-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--oc-dot-stopped);
+}
+
+/* Same scheme as the button: green while running, grey once stopped. */
+.agent-dot.running {
+  background: var(--oc-dot-assistant);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.agent-dot.completed,
+.agent-dot.cancelled,
+.agent-dot.idle {
+  background: var(--oc-dot-stopped);
+}
+
+.agent-dot.error {
+  background: var(--oc-dot-error);
+}
+
+.agent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.agent-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-state {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+.agent-desc {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.7;
+  word-break: break-word;
+}
+
+/* ---- send / stop ---- */
+
+.sendbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.sendbtn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.sendbtn .ico-stop {
+  display: none;
+}
+
+.sendbtn.stopping .ico-send {
+  display: none;
+}
+
+.sendbtn.stopping .ico-stop {
+  display: block;
+}
+
+.sendbtn.stopping {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+button {
+  cursor: pointer;
+  padding: 3px 12px;
+  border: none;
+  border-radius: 4px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.secondary {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+
+button.secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* -------------------------------------------------------------------- dropzone */
+
+.dropzone {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-sideBar-background) 80%, transparent);
+  border: 2px dashed var(--oc-accent);
+  pointer-events: none;
+  z-index: 40;
+}

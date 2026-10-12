@@ -1,0 +1,138 @@
+{
+  "name": "opencode-sidebar",
+  "displayName": "OpenCode Sidebar",
+  "description": "OpenCode chat in the secondary sidebar, with active-file/selection context.",
+  "publisher": "local",
+  "version": "0.0.1",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other",
+    "Chat"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:opencode.chat",
+    "onCommand:opencode.addToChat",
+    "onCommand:opencode.newSession",
+    "onCommand:opencode.restartServer",
+    "onCommand:opencode.showConnection",
+    "onCommand:opencode.openWebUI"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "opencode-sidebar",
+          "title": "OpenCode",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencode-sidebar": [
+        {
+          "type": "webview",
+          "id": "opencode.chat",
+          "name": "OpenCode"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "opencode.addToChat",
+        "title": "OpenCode: Add Selection to Chat"
+      },
+      {
+        "command": "opencode.newSession",
+        "title": "OpenCode: New Session"
+      },
+      {
+        "command": "opencode.restartServer",
+        "title": "OpenCode: Restart Server"
+      },
+      {
+        "command": "opencode.showConnection",
+        "title": "OpenCode: Show Server Address & Password"
+      },
+      {
+        "command": "opencode.openWebUI",
+        "title": "OpenCode: Open Web UI in Browser"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "opencode.addToChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "opencode.addToChat",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "opencode.addToChat",
+          "when": "editorTextFocus",
+          "group": "navigation@9"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OpenCode",
+      "properties": {
+        "opencode.model": {
+          "type": "string",
+          "default": "opencode-go/deepseek-v4.1-flash",
+          "markdownDescription": "Model used for new sessions, as `providerID/modelID`. A freshly spawned server otherwise defaults to an unauthenticated provider."
+        },
+        "opencode.cliPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to `opencode.exe`. Leave empty to auto-detect."
+        },
+        "opencode.autoAttach.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically attach the active editor file (or selection) to each prompt."
+        },
+        "opencode.server.hostname": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "markdownDescription": "Interface the server binds to and that the extension connects to. `127.0.0.1` keeps it loopback-only; use `0.0.0.0` (or a LAN address) to reach the web UI from another device."
+        },
+        "opencode.server.port": {
+          "type": "number",
+          "default": 4096,
+          "markdownDescription": "Port for the server. Defaults to `4096`, the port the OpenCode desktop app also uses. If it is taken, the extension connects to the server already there rather than failing. Set `0` to always pick a free port at random."
+        },
+        "opencode.server.password": {
+          "type": "string",
+          "default": "654321",
+          "markdownDescription": "Password for the server (Basic auth user `opencode`), stored in plain text in your settings and written to `~/.config/opencode/service.json`. Clear it to have opencode generate a random password each start."
+        },
+        "opencode.server.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments passed to 'opencode serve'."
+        },
+        "opencode.attach.url": {
+          "type": "string",
+          "default": "",
+          "description": "Attach to an already-running opencode server instead of spawning one (advanced)."
+        }
+      }
+    }
+  }
+}
