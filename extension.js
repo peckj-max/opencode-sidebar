@@ -62,7 +62,10 @@ function currentModelRef() {
  */
 function modelOptions(list) {
   const pinned = pinnedModelIds();
-  const options = list.map((m) => ({
+  // The server reports models the user disabled in its config as enabled:false;
+  // offering them would let the composer pick something that cannot run.
+  const usable = (list || []).filter((m) => m && m.enabled !== false);
+  const options = usable.map((m) => ({
     id: m.id,
     providerID: m.providerID,
     name: m.name || m.id,

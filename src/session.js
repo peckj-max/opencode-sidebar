@@ -71,7 +71,7 @@ class Chat {
     if (!this.defaultModelRef) return false;
     try {
       await this.server.request('POST', `/api/session/${id}/model`, {
-        body: { model: this.defaultModelRef }
+        body: { model: modelBody(this.defaultModelRef) }
       });
       const ref = this.defaultModelRef;
       this.log(`[chat] session had no model; applied ${ref.providerID}/${ref.id}`);
@@ -129,7 +129,7 @@ class Chat {
 
   async setModel(ref) {
     const id = await this.ensureSession();
-    await this.server.request('POST', `/api/session/${id}/model`, { body: { model: ref } });
+    await this.server.request('POST', `/api/session/${id}/model`, { body: { model: modelBody(ref) } });
   }
 
   async setAgent(agent) {
@@ -368,11 +368,27 @@ function selectionFrom(session, rows) {
  * The variant a model reference was set with. The server writes the literal
  * "default" when there is none, and omits the field entirely on a fresh
  * session; both mean "Default" in the picker.
- * @returns {string|null}
+ *
+ * Note the return is `undefined`, not null: a model reference we send back must
+ * leave the key out entirely. The API rejects a null variant outright with
+ * `Expected string at ["model"]["variant"]`, which silently leaves the session
+ * with no model at all.
+ * @returns {string|undefined}
  */
 function variantOf(model) {
   const v = model && model.variant;
-  return v && v !== 'default' ? v : null;
+  return v && v !== 'default' ? v : undefined;
+}
+
+/**
+ * Body for a model reference. `variant` is included only when it is a real
+ * string — absent is how "Default" is sent — so a null or empty variant from
+ * anywhere upstream can never reach the API.
+ */
+function modelBody(ref) {
+  const model = { id: ref.id, providerID: ref.providerID };
+  if (typeof ref.variant === 'string' && ref.variant) model.variant = ref.variant;
+  return model;
 }
 
 /**
