@@ -12,6 +12,17 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   editor right-click entry. Adds the selection or whole file as a staged attachment chip.
   (`Ctrl+Shift+L` is deliberately avoided — it is VS Code's *Select All Occurrences of Find Match*.)
 - **Open referenced files** — click a `path:line` the assistant mentions to open it in the editor.
+- **Agent, model and variant pickers** — the composer bar carries three dropdowns: the primary
+  agent (`build`, `plan`), the model, and the model's reasoning-effort variant. Variants come
+  from the model itself, so the list differs per model (`low`/`high`/`max` on one, `none` … `max`
+  on another); **Default** sends no variant and lets the model's own setting apply. A variant the
+  newly chosen model does not offer is dropped rather than carried across. The choice is
+  remembered for the sessions that follow and re-applied to each session you switch to.
+  Click the ☆ beside a model to pin it; the list is sorted pinned first, then alphabetically
+  within each group. Hovering a model shows its pricing (USD per million tokens, from the
+  server's own cost data), any higher-context tier, and its context window. Pins are stored in
+  the extension's global state, so they apply to every workspace (vs. session pins, which are
+  per-workspace).
 
 ## Requirements
 

@@ -16,6 +16,8 @@ let server;
 let chat;
 let tracker;
 let provider;
+/** Pinned models are a user preference, not a per-workspace one. */
+let globalState;
 let aborted = false;
 let started = false;
 /** Last prompt sent, so an instruction-initialization failure can be retried. */
@@ -43,6 +45,99 @@ function configuredModelRef() {
   return { providerID: raw.slice(0, idx), id: raw.slice(idx + 1) };
 }
 
+/**
+ * The model the composer should be showing: whatever the current session uses,
+ * or the configured one before anything has been chosen. Re-posting the
+ * configured model would drag the picker off a session that differs from it.
+ */
+function currentModelRef() {
+  return chat.defaultModelRef || configuredModelRef();
+}
+
+/**
+ * The models the webview can choose from, pinned ones first. Variants travel
+ * with them: the composer's reasoning-effort picker is built from the selected
+ * model's own list, which differs per model ("low/high/max" here,
+ * "none/low/…/max" there).
+ */
+function modelOptions(list) {
+  const pinned = pinnedModelIds();
+  const options = list.map((m) => ({
+    id: m.id,
+    providerID: m.providerID,
+    name: m.name || m.id,
+    variants: (m.variants || []).map((v) => (typeof v === 'string' ? v : v && v.id)).filter(Boolean),
+    pinned: pinned.includes(modelKey(m.providerID, m.id)),
+    // USD per million tokens. Later entries are the higher-context tiers, each
+    // tagged with the context size it kicks in above.
+    cost: Array.isArray(m.cost)
+      ? m.cost.map((t) => ({
+          input: t.input,
+          output: t.output,
+          cacheRead: t.cache && t.cache.read,
+          cacheWrite: t.cache && t.cache.write,
+          tier: (t.tier && t.tier.size) || null
+        }))
+      : [],
+    limit: m.limit ? { context: m.limit.context, output: m.limit.output } : null
+  }));
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  // Pinned first, then alphabetical within each group.
+  return options.filter((m) => m.pinned).sort(byName).concat(options.filter((m) => !m.pinned).sort(byName));
+}
+
+/** Same "providerID/modelID" form as the `opencode.model` setting. */
+function modelKey(providerID, id) {
+  return `${providerID}/${id}`;
+}
+
+const PINNED_MODELS_KEY = 'opencode.pinnedModels';
+
+function pinnedModelIds() {
+  return (globalState && globalState.get(PINNED_MODELS_KEY, [])) || [];
+}
+
+async function togglePinModel(providerID, id) {
+  const key = modelKey(providerID, id);
+  const current = pinnedModelIds();
+  const next = current.includes(key) ? current.filter((x) => x !== key) : current.concat([key]);
+  await globalState.update(PINNED_MODELS_KEY, next);
+  await postModels();
+}
+
+/** The model list, with the composer's current pick. */
+async function postModels() {
+  const list = await chat.listModels();
+  const selected = currentModelRef();
+  // Only ask the server for its own default when there is nothing better to
+  // show, rather than on every menu open.
+  const def = selected ? null : await chat.defaultModel();
+  provider.post({
+    type: 'models',
+    models: modelOptions(list),
+    default: def ? { id: def.id, providerID: def.providerID } : null,
+    selected
+  });
+}
+
+/**
+ * Agents the composer may offer. The server reports seven, but only the
+ * non-hidden `primary` ones can front a session — the rest are subagents
+ * (explore, general) or internal (title, summary, compaction).
+ *
+ * The description is passed through whole: the menu gives it a full-width line
+ * of its own and wraps it, so there is nothing to truncate here.
+ */
+async function postAgentOptions() {
+  const list = await chat.listAgents();
+  provider.post({
+    type: 'agent-options',
+    agents: list
+      .filter((a) => a && a.mode === 'primary' && !a.hidden)
+      .map((a) => ({ id: a.id, name: a.name || a.id, description: a.description || '' }))
+  });
+}
+
 function normalizeDir(p) {
   return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
@@ -50,6 +145,8 @@ function normalizeDir(p) {
 function activate(context) {
   output = vscode.window.createOutputChannel('OpenCode');
   context.subscriptions.push(output);
+
+  globalState = context.globalState;
 
   server = new OpenCodeServer(output, context.secrets);
   chat = new Chat(server, context.workspaceState, log);
@@ -167,7 +264,9 @@ function stopTitlePoll() {
 async function restoreSession() {
   try {
     const restored = await chat.restore();
-    if (!restored || !restored.transcript.length) return;
+    if (!restored) return;
+    postSelection(restored.selection);
+    if (!restored.transcript.length) return;
     provider.post({ type: 'clear' });
     provider.post({ type: 'transcript', messages: restored.transcript });
     adoptAgents(restored.agents);
@@ -175,6 +274,26 @@ async function restoreSession() {
   } catch (err) {
     log(`[ext] session restore failed: ${err.message}`);
   }
+}
+
+/**
+ * Point the composer's pickers at what a session is actually using. The choice
+ * also becomes the default for the sessions that follow it, matching the
+ * composer's own behaviour when the user picks one by hand.
+ */
+function postSelection(selection) {
+  if (!selection) return;
+  // Remember the session's own choice for the sessions that follow it.
+  if (selection.agent) chat.defaultAgent = selection.agent;
+  if (selection.model) chat.defaultModelRef = selection.model;
+  provider.post({
+    type: 'selection',
+    agent: selection.agent,
+    // A session that has no model of its own inherits the configured one, which
+    // is what its next prompt will use — better than leaving the previous
+    // session's model on screen.
+    model: selection.model || configuredModelRef()
+  });
 }
 
 /** Delete a session, with a modal confirmation because it cannot be undone. */
@@ -303,19 +422,8 @@ async function ensureStarted() {
     runEvents(server.baseUrl + '/api/event', server.headers(), onEvent, () => aborted, log).catch((err) =>
       log(`[ext] event loop stopped: ${err.message}`)
     );
-    const models = await chat.listModels();
-    const def = await chat.defaultModel();
-    provider.post({
-      type: 'models',
-      models: models.map((m) => ({
-        id: m.id,
-        providerID: m.providerID,
-        name: m.name || m.id,
-        variants: (m.variants || []).map((v) => v.id)
-      })),
-      default: def ? { id: def.id, providerID: def.providerID } : null,
-      selected: configuredModelRef()
-    });
+    await postModels();
+    await postAgentOptions();
     await loadAgentDescriptions();
     postAgents();
     sendContext();
@@ -820,6 +928,21 @@ async function handleWebviewMessage(msg) {
           .update('model', `${msg.ref.providerID}/${msg.ref.id}`, vscode.ConfigurationTarget.Global);
         provider.post({ type: 'model-changed', ref: msg.ref });
         break;
+      case 'setAgent':
+        await chat.setAgent(msg.agent);
+        chat.defaultAgent = msg.agent;
+        provider.post({ type: 'agent-changed', agent: msg.agent });
+        break;
+      case 'setVariant': {
+        const ref = msg.ref;
+        if (!ref || !ref.id) break;
+        await chat.setModel(ref);
+        // Remembered for the next new session, but deliberately not written to
+        // `opencode.model`: that setting is providerID/modelID, so rewriting it
+        // here would only drop the variant again.
+        chat.defaultModelRef = ref;
+        break;
+      }
       case 'perm':
         await chat.replyPermission(msg.requestId, msg.decision, msg.message);
         break;
@@ -839,16 +962,13 @@ async function handleWebviewMessage(msg) {
       case 'formCancel':
         await chat.cancelForm(msg.formId, msg.message);
         break;
-      case 'listModels': {
+      case 'listModels':
         await ensureStarted();
-        const list = await chat.listModels();
-        provider.post({
-          type: 'models',
-          models: list.map((m) => ({ id: m.id, providerID: m.providerID, name: m.name || m.id })),
-          selected: configuredModelRef()
-        });
+        await postModels();
         break;
-      }
+      case 'togglePinModel':
+        await togglePinModel(msg.providerID, msg.id);
+        break;
       case 'listSessions':
         await ensureStarted();
         await postSessions();
@@ -907,6 +1027,8 @@ async function addToChat() {
 async function newSession() {
   await ensureStarted();
   await chat.newSession();
+  // The new session carries the composer's standing choice; keep the pickers on it.
+  postSelection({ agent: chat.defaultAgent, model: chat.defaultModelRef });
   provider.post({ type: 'clear' });
   resetAgents();
   stopTitlePoll();
@@ -953,7 +1075,8 @@ async function postSessions() {
 async function switchSession(id) {
   if (!id) return;
   await ensureStarted();
-  const { transcript, agents } = await chat.switchTo(id);
+  const { transcript, agents, selection } = await chat.switchTo(id);
+  postSelection(selection);
   provider.post({ type: 'clear' });
   provider.post({ type: 'transcript', messages: transcript });
   adoptAgents(agents);
@@ -1125,8 +1248,16 @@ class ChatViewProvider {
     <div id="chips" class="chips"></div>
     <textarea id="input" rows="1" placeholder="Ask OpenCode…  (Ctrl+L adds the selection, or drop a file here)"></textarea>
     <div class="row">
-      <button id="model-btn" class="model-btn" title="Choose model">
-        <span id="model-label">Model</span>
+      <button id="agent-btn" class="picker-btn" title="Choose the primary agent">
+        <span id="agent-label" class="picker-label">Agent</span>
+        <svg class="chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="model-btn" class="picker-btn wide" title="Choose model">
+        <span id="model-label" class="picker-label">Model</span>
+        <svg class="chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="variant-btn" class="picker-btn" title="Choose the model's reasoning effort">
+        <span id="variant-label" class="picker-label">Default</span>
         <svg class="chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button id="agents-btn" class="agents-btn hidden" title="Agents">
@@ -1139,8 +1270,10 @@ class ChatViewProvider {
         <svg class="ico-stop" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.4" fill="currentColor"/></svg>
       </button>
     </div>
-    <div id="model-menu" class="model-menu hidden"></div>
-    <div id="agents-panel" class="model-menu agents-panel hidden"></div>
+    <div id="agent-menu" class="picker-menu hidden"></div>
+    <div id="model-menu" class="picker-menu hidden"></div>
+    <div id="variant-menu" class="picker-menu hidden"></div>
+    <div id="agents-panel" class="picker-menu agents-panel hidden"></div>
   </div>
 </footer>
 <div id="dropzone" class="dropzone hidden">Drop files to add as context</div>

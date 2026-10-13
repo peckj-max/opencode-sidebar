@@ -5,9 +5,15 @@
   const messagesEl = document.getElementById('messages');
   const chipsEl = document.getElementById('chips');
   const inputEl = document.getElementById('input');
+  const agentBtn = document.getElementById('agent-btn');
+  const agentLabel = document.getElementById('agent-label');
+  const agentMenu = document.getElementById('agent-menu');
   const modelBtn = document.getElementById('model-btn');
   const modelLabel = document.getElementById('model-label');
   const modelMenu = document.getElementById('model-menu');
+  const variantBtn = document.getElementById('variant-btn');
+  const variantLabel = document.getElementById('variant-label');
+  const variantMenu = document.getElementById('variant-menu');
   const agentsBtn = document.getElementById('agents-btn');
   const agentsDot = document.getElementById('agents-dot');
   const agentsLabel = document.getElementById('agents-label');
@@ -38,6 +44,11 @@
   let currentSession = null;
   let models = [];
   let selectedModel = null;
+  let agentOptions = [];
+  let selectedAgent = null;
+  // null is "Default": no variant field is sent, so the server's own default
+  // applies. It reports that back as the literal string "default".
+  let selectedVariant = null;
   let busy = false;
   let thinking = null;
   let thinkingTimer = null;
@@ -476,69 +487,262 @@
     renderChips();
   }
 
-  // -------------------------------------------------------------- model picker
+  // ------------------------------------------------- composer pickers
+  // Three of them share one bar: agent, model, and the model's reasoning-effort
+  // variant. Only one menu is ever open, so they all close each other.
+
+  const PICKERS = [
+    { menu: agentMenu, btn: agentBtn },
+    { menu: modelMenu, btn: modelBtn },
+    { menu: variantMenu, btn: variantBtn },
+    { menu: agentsPanel, btn: agentsBtn }
+  ];
+
+  function closePickers(keep) {
+    for (const p of PICKERS) {
+      if (p.menu === keep) continue;
+      p.menu.classList.add('hidden');
+      p.btn.classList.remove('open');
+    }
+  }
+
+  function openPicker(menu, btn, render) {
+    closePickers(menu);
+    closePanels();
+    render();
+    menu.classList.remove('hidden');
+    btn.classList.add('open');
+  }
+
+  /** One row in any picker menu. `stacked` puts the description on its own line. */
+  function pickerItem(main, meta, current, onPick, stacked) {
+    const item = document.createElement('div');
+    item.className = 'picker-item' + (stacked ? ' stacked' : '') + (current ? ' current' : '');
+    const name = document.createElement('span');
+    name.className = 'picker-name';
+    name.textContent = main;
+    const side = document.createElement('span');
+    side.className = 'picker-meta';
+    side.textContent = meta || '';
+    const check = document.createElement('span');
+    check.className = 'picker-check';
+    check.textContent = '✓';
+    item.appendChild(name);
+    if (meta) item.appendChild(side);
+    item.appendChild(check);
+    item.addEventListener('click', onPick);
+    return item;
+  }
+
+  function pickerEmpty(menu, text) {
+    const empty = document.createElement('div');
+    empty.className = 'picker-empty';
+    empty.textContent = text;
+    menu.appendChild(empty);
+  }
+
+  // ------------------------------------------------------------------- agent
+
+  function renderAgentMenu() {
+    agentMenu.innerHTML = '';
+    if (!agentOptions.length) {
+      pickerEmpty(agentMenu, 'No primary agents reported by the server.');
+      return;
+    }
+    for (const a of agentOptions) {
+      agentMenu.appendChild(
+        pickerItem(
+          a.name || a.id,
+          a.description,
+          a.id === selectedAgent,
+          () => {
+            selectedAgent = a.id;
+            agentLabel.textContent = a.name || a.id;
+            closePickers();
+            vscode.postMessage({ type: 'setAgent', agent: a.id });
+          },
+          // The description needs the full menu width, so it goes on its own line.
+          true
+        )
+      );
+    }
+  }
+
+  function toggleAgentMenu() {
+    if (agentMenu.classList.contains('hidden')) openPicker(agentMenu, agentBtn, renderAgentMenu);
+    else closePickers();
+  }
+
+  function fillAgents(list) {
+    agentOptions = list || [];
+    // Nothing chosen yet: show the server's own first primary agent, which is
+    // what a new session actually gets.
+    if (!selectedAgent && agentOptions.length) selectedAgent = agentOptions[0].id;
+    const cur = agentOptions.find((a) => a.id === selectedAgent);
+    agentLabel.textContent = cur ? cur.name || cur.id : 'Agent';
+    if (!agentMenu.classList.contains('hidden')) renderAgentMenu();
+  }
+
+  // ------------------------------------------------------------------- model
 
   function isCurrent(m) {
     return !!selectedModel && selectedModel.id === m.id && selectedModel.providerID === m.providerID;
   }
 
+  function modelLabelFor(ref) {
+    const m = ref && models.find((x) => x.id === ref.id && x.providerID === ref.providerID);
+    return m ? m.name || m.id : (ref && ref.id) || 'Model';
+  }
+
+  const PER_MTOK = 'per 1M tokens';
+
+  /** Two decimals, which is what prices are quoted in; more only when tiny. */
+  function money(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '?';
+    if (n >= 0.01) return n.toFixed(2);
+    return String(Number(n.toPrecision(2)));
+  }
+
+  /** 262144 -> "262K", 1048576 -> "1M", 2097152 -> "2.1M". */
+  function shortTokens(n) {
+    if (!n) return '';
+    if (n >= 1000000) {
+      const m = Math.round(n / 100000) / 10;
+      return (Number.isInteger(m) ? m : m.toFixed(1)) + 'M';
+    }
+    return Math.round(n / 1000) + 'K';
+  }
+
+  /**
+   * Hover text for a model. The server reports cost as an array of tiers in USD
+   * per million tokens — the first is the base rate, any later ones apply above
+   * their context size.
+   */
+  function priceTitle(m) {
+    const lines = [m.name || m.id, m.providerID];
+    const tiers = m.cost || [];
+    const base = tiers[0];
+    if (!base) {
+      lines.push('No pricing reported by the server.');
+    } else if (!base.input && !base.output) {
+      lines.push('Free');
+    } else {
+      lines.push(`$${money(base.input)} in · $${money(base.output)} out ${PER_MTOK}`);
+      const cache = [];
+      if (base.cacheRead) cache.push(`$${money(base.cacheRead)} read`);
+      if (base.cacheWrite) cache.push(`$${money(base.cacheWrite)} write`);
+      if (cache.length) lines.push(`cache ${cache.join(' · ')} ${PER_MTOK}`);
+    }
+    for (const t of tiers.slice(1)) {
+      const size = shortTokens(t.tier);
+      lines.push(`over ${size ? size + ' context' : 'a larger context'}: $${money(t.input)} in · $${money(t.output)} out ${PER_MTOK}`);
+    }
+    const ctx = m.limit && m.limit.context;
+    if (ctx) lines.push(`${shortTokens(ctx)} context window`);
+    return lines.join('\n');
+  }
+
   function renderModelMenu() {
     modelMenu.innerHTML = '';
     if (!models.length) {
-      const empty = document.createElement('div');
-      empty.className = 'model-empty';
-      empty.textContent = 'No models reported by the server.';
-      modelMenu.appendChild(empty);
+      pickerEmpty(modelMenu, 'No models reported by the server.');
       return;
     }
     for (const m of models) {
-      const item = document.createElement('div');
-      item.className = 'model-item' + (isCurrent(m) ? ' current' : '');
-      const name = document.createElement('span');
-      name.className = 'model-name';
-      name.textContent = m.name || m.id;
-      const prov = document.createElement('span');
-      prov.className = 'model-prov';
-      prov.textContent = m.providerID;
-      const check = document.createElement('span');
-      check.className = 'model-check';
-      check.textContent = '✓';
-      item.appendChild(name);
-      item.appendChild(prov);
-      item.appendChild(check);
-      item.addEventListener('click', () => {
+      const item = pickerItem(m.name || m.id, m.providerID, isCurrent(m), () => {
         selectedModel = { id: m.id, providerID: m.providerID };
+        // A variant belongs to its model, so one the new model does not offer
+        // is dropped rather than carried across as a value it would ignore.
+        const variants = m.variants || [];
+        if (selectedVariant && !variants.includes(selectedVariant)) selectedVariant = null;
+        if (selectedVariant) selectedModel.variant = selectedVariant;
         modelLabel.textContent = m.name || m.id;
-        closeModelMenu();
+        renderVariantLabel();
+        closePickers();
         vscode.postMessage({ type: 'setModel', ref: selectedModel });
       });
+      // A pin is an action, not a choice: it must not also pick the model.
+      item.title = priceTitle(m);
+      const pin = document.createElement('span');
+      pin.className = 'model-pin' + (m.pinned ? ' on' : '');
+      pin.textContent = m.pinned ? '★' : '☆';
+      pin.title = m.pinned ? 'Unpin model' : 'Pin model to the top';
+      pin.addEventListener('click', (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: 'togglePinModel', id: m.id, providerID: m.providerID });
+      });
+      item.appendChild(pin);
       modelMenu.appendChild(item);
     }
   }
 
-  function closeModelMenu() {
-    modelMenu.classList.add('hidden');
-    modelBtn.classList.remove('open');
-  }
-
   function toggleModelMenu() {
     if (modelMenu.classList.contains('hidden')) {
-      closeAgents();
-      renderModelMenu();
-      modelMenu.classList.remove('hidden');
-      modelBtn.classList.add('open');
+      openPicker(modelMenu, modelBtn, renderModelMenu);
+      // Refresh in the background; the menu re-renders when the list arrives.
       vscode.postMessage({ type: 'listModels' });
     } else {
-      closeModelMenu();
+      closePickers();
     }
   }
 
   function fillModels(list, selected) {
     models = list || [];
-    if (selected && selected.id) selectedModel = { id: selected.id, providerID: selected.providerID };
-    const cur = models.find(isCurrent);
-    modelLabel.textContent = cur ? cur.name || cur.id : selectedModel ? selectedModel.id : 'Model';
+    if (selected && selected.id) {
+      selectedModel = { id: selected.id, providerID: selected.providerID };
+      // Authoritative: the host sends the current model's real variant, and an
+      // absent one means Default rather than "keep whatever was showing".
+      selectedVariant = selected.variant || null;
+    }
+    modelLabel.textContent = modelLabelFor(selectedModel);
+    renderVariantLabel();
     if (!modelMenu.classList.contains('hidden')) renderModelMenu();
+    if (!variantMenu.classList.contains('hidden')) renderVariantMenu();
+  }
+
+  // ----------------------------------------------------------------- variant
+
+  /** The variants the selected model offers; empty when none is selected. */
+  function currentVariants() {
+    const m = models.find(isCurrent);
+    return (m && m.variants) || [];
+  }
+
+  function variantText(id) {
+    return id ? id.charAt(0).toUpperCase() + id.slice(1) : 'Default';
+  }
+
+  function renderVariantMenu() {
+    variantMenu.innerHTML = '';
+    variantMenu.appendChild(
+      pickerItem('Default', 'the model’s own setting', !selectedVariant, () => pickVariant(null))
+    );
+    const variants = currentVariants();
+    if (!variants.length) {
+      pickerEmpty(variantMenu, 'This model offers no variants.');
+      return;
+    }
+    for (const id of variants) {
+      variantMenu.appendChild(pickerItem(variantText(id), '', id === selectedVariant, () => pickVariant(id)));
+    }
+  }
+
+  function pickVariant(id) {
+    selectedVariant = id || null;
+    renderVariantLabel();
+    closePickers();
+    const ref = { id: selectedModel.id, providerID: selectedModel.providerID };
+    if (selectedVariant) ref.variant = selectedVariant;
+    vscode.postMessage({ type: 'setVariant', ref });
+  }
+
+  function renderVariantLabel() {
+    variantLabel.textContent = variantText(selectedVariant);
+  }
+
+  function toggleVariantMenu() {
+    if (variantMenu.classList.contains('hidden')) openPicker(variantMenu, variantBtn, renderVariantMenu);
+    else closePickers();
   }
 
   // ---------------------------------------------------------------- agent map
@@ -612,14 +816,8 @@
   }
 
   function toggleAgents() {
-    if (agentsPanel.classList.contains('hidden')) {
-      closeModelMenu();
-      renderAgents();
-      agentsPanel.classList.remove('hidden');
-      agentsBtn.classList.add('open');
-    } else {
-      closeAgents();
-    }
+    if (agentsPanel.classList.contains('hidden')) openPicker(agentsPanel, agentsBtn, renderAgents);
+    else closePickers();
   }
 
   // ------------------------------------------------------------------- sessions
@@ -747,6 +945,13 @@
     if (except !== 'sessions') sessionsEl.classList.add('hidden');
     if (except !== 'bookmarks') bookmarksEl.classList.add('hidden');
   }
+
+  // The overlay panels and the title-bar button each is toggled from. A click
+  // outside both dismisses the panel.
+  const PANELS = [
+    { el: sessionsEl, btn: 'btn-history' },
+    { el: bookmarksEl, btn: 'btn-bookmarks' }
+  ];
 
   /** Scroll a response into view and flash it after a bookmark jump. */
   function focusMessage(messageId) {
@@ -1063,6 +1268,23 @@
       case 'models':
         fillModels(msg.models, msg.selected || msg.default);
         break;
+      case 'agent-options':
+        fillAgents(msg.agents);
+        break;
+      case 'selection':
+        // A restored or switched session's own agent/model, which may differ
+        // from whatever the composer was last showing. A session that has set
+        // neither falls back to "build" and the configured model, which is what
+        // its next prompt will actually use.
+        selectedAgent = msg.agent || (agentOptions[0] && agentOptions[0].id) || selectedAgent;
+        fillAgents(agentOptions);
+        if (msg.model && msg.model.id) {
+          selectedModel = { id: msg.model.id, providerID: msg.model.providerID };
+          selectedVariant = msg.model.variant || null;
+          modelLabel.textContent = modelLabelFor(selectedModel);
+          renderVariantLabel();
+        }
+        break;
       case 'bookmarks':
         bookmarkItems = msg.items || [];
         bookmarkedIds = new Set(bookmarkItems.map((b) => b.messageId));
@@ -1091,8 +1313,7 @@
         clearMessages();
         chips = [];
         pendingPermission = null;
-        closeModelMenu();
-        closeAgents();
+        closePickers();
         setBusy(false);
         renderChips();
         break;
@@ -1115,9 +1336,19 @@
     else send();
   });
 
+  agentBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleAgentMenu();
+  });
+
   modelBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleModelMenu();
+  });
+
+  variantBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleVariantMenu();
   });
 
   agentsBtn.addEventListener('click', (e) => {
@@ -1165,18 +1396,25 @@
   });
 
   document.addEventListener('click', (e) => {
-    if (!modelMenu.classList.contains('hidden') && !e.target.closest('#model-menu') && !e.target.closest('#model-btn')) {
-      closeModelMenu();
+    // Any click outside an open picker's menu or button closes it.
+    for (const p of PICKERS) {
+      if (p.menu.classList.contains('hidden')) continue;
+      if (e.target.closest('#' + p.menu.id) || e.target.closest('#' + p.btn.id)) continue;
+      closePickers();
+      break;
     }
-    if (!agentsPanel.classList.contains('hidden') && !e.target.closest('#agents-panel') && !e.target.closest('#agents-btn')) {
-      closeAgents();
+    // Same for the overlays, each with the title-bar button that toggles it.
+    for (const p of PANELS) {
+      if (p.el.classList.contains('hidden')) continue;
+      if (e.target.closest('#' + p.el.id) || e.target.closest('#' + p.btn)) continue;
+      closePanels();
+      break;
     }
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      closeModelMenu();
-      closeAgents();
+      closePickers();
       closePanels();
       return;
     }

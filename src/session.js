@@ -23,6 +23,8 @@ class Chat {
     this.sessionId = memento.get(SESSION_KEY, null);
     /** @type {{id:string, providerID:string, variant?:string}|null} */
     this.defaultModelRef = null;
+    /** Primary agent chosen in the composer, kept for the next new session. */
+    this.defaultAgent = null;
   }
 
   async ensureSession() {
@@ -73,6 +75,16 @@ class Chat {
         this.log(`[chat] model ${this.defaultModelRef.providerID}/${this.defaultModelRef.id}`);
       } catch (err) {
         this.log(`[chat] setModel failed: ${err.message}`);
+      }
+    }
+    // Carry the composer's agent choice over; the server would otherwise reset
+    // every new session to its own default ("build").
+    if (this.defaultAgent) {
+      try {
+        await this.setAgent(this.defaultAgent);
+        this.log(`[chat] agent ${this.defaultAgent}`);
+      } catch (err) {
+        this.log(`[chat] setAgent failed: ${err.message}`);
       }
     }
     return this.sessionId;
@@ -154,13 +166,18 @@ class Chat {
    */
   async restore() {
     if (!this.sessionId) return null;
+    let session;
     try {
-      await this.getSession(this.sessionId);
+      session = await this.getSession(this.sessionId);
     } catch {
       return null;
     }
     const raw = await this.rawMessages(this.sessionId);
-    return { transcript: toTranscript(raw), agents: agentsFromMessages(raw) };
+    return {
+      transcript: toTranscript(raw),
+      agents: agentsFromMessages(raw),
+      selection: selectionFrom(session)
+    };
   }
 
   /** Delete a session; clears the current id when that session was the one. */
@@ -210,7 +227,17 @@ class Chat {
     await this.memento.update(SESSION_KEY, id);
     await this.memento.update(SESSION_DIR_KEY, normalizeDir(this.server.dir));
     const raw = await this.rawMessages(id);
-    return { transcript: toTranscript(raw), agents: agentsFromMessages(raw) };
+    let session = null;
+    try {
+      session = await this.getSession(id);
+    } catch (err) {
+      this.log(`[chat] could not read the session's agent/model: ${err.message}`);
+    }
+    return {
+      transcript: toTranscript(raw),
+      agents: agentsFromMessages(raw),
+      selection: selectionFrom(session)
+    };
   }
 
   /** Transcript of the current session, newest last. */
@@ -286,6 +313,28 @@ function toTranscript(rows) {
 }
 
 /**
+ * What the composer's agent/model/variant pickers should show for a session.
+ * A session with no model set reports neither field, and one set without a
+ * variant comes back as the literal "default" — both mean "Default" in the UI.
+ * @returns {{agent:string|null, model:{id:string,providerID:string,variant:string|null}|null}}
+ */
+function selectionFrom(session) {
+  const s = session || {};
+  const m = s.model;
+  return {
+    agent: s.agent || null,
+    model:
+      m && m.id
+        ? {
+            id: m.id,
+            providerID: m.providerID,
+            variant: m.variant && m.variant !== 'default' ? m.variant : null
+          }
+        : null
+  };
+}
+
+/**
  * Rebuild the agent map from a stored session, so restoring a session shows the
  * subagents that ran in it. Tool parts look like:
  *   { type:"tool", id, name:"subagent",
@@ -322,4 +371,4 @@ function agentsFromMessages(rows) {
   return { main, items };
 }
 
-module.exports = { Chat, toTranscript, agentsFromMessages };
+module.exports = { Chat, toTranscript, agentsFromMessages, selectionFrom };

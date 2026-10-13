@@ -330,12 +330,14 @@ body {
   display: none;
 }
 
+/* Centred on the rail (4.5px) and on the first line of text (9.5px), so the
+   offsets are shrunk along with the size rather than the dot drifting. */
 .tl-dot {
   position: absolute;
-  left: 0;
-  top: 5px;
-  width: 9px;
-  height: 9px;
+  left: 1px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--vscode-descriptionForeground);
   box-shadow: 0 0 0 2px var(--vscode-sideBar-background);
@@ -892,13 +894,16 @@ textarea#input::placeholder {
   border-top: 1px solid var(--oc-input-border);
 }
 
-/* ---- model picker ---- */
+/* ---- composer pickers: agent, model, variant ---- */
 
-.model-btn {
+.picker-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  max-width: 68%;
+  /* Three share the bar, so each shrinks and ellipsises rather than wrapping. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
   padding: 2px 7px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -909,29 +914,36 @@ textarea#input::placeholder {
   overflow: hidden;
 }
 
-.model-btn:hover,
-.model-btn.open {
+/* The model name is the longest of the three, so it gets the most room. */
+.picker-btn.wide {
+  max-width: 52%;
+}
+
+.picker-btn:hover,
+.picker-btn.open {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.18));
   border-color: var(--vscode-panel-border);
 }
 
-.model-btn #model-label {
+.picker-btn .picker-label {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.model-btn .chev {
+.picker-btn .chev {
   flex: 0 0 auto;
   transition: transform 0.15s ease;
 }
 
-.model-btn.open .chev {
+.picker-btn.open .chev {
   transform: rotate(180deg);
 }
 
-.model-menu {
+.picker-menu {
   position: absolute;
   left: 8px;
   right: 8px;
@@ -958,13 +970,13 @@ textarea#input::placeholder {
   }
 }
 
-.model-empty {
+.picker-empty {
   padding: 6px 8px;
   font-size: 11px;
   opacity: 0.6;
 }
 
-.model-item {
+.picker-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -974,35 +986,96 @@ textarea#input::placeholder {
   font-size: 12px;
 }
 
-.model-item:hover {
+.picker-item:hover {
   background: var(--vscode-list-hoverBackground);
 }
 
-.model-item.current {
+.picker-item.current {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
 }
 
-.model-name {
+.picker-name {
   flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.model-prov {
-  flex: 0 0 auto;
+/* Shrinks and ellipsises: a long provider or description must never push the
+   row wider than the menu. */
+.picker-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 10px;
   opacity: 0.55;
 }
 
-.model-check {
+/* Rows whose description needs the full width: name over description, with the
+   tick held to the right of both. */
+.picker-item.stacked {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'name check'
+    'meta check';
+  align-items: center;
+  row-gap: 1px;
+}
+
+.picker-item.stacked .picker-name {
+  grid-area: name;
+}
+
+/* Wraps instead of ellipsising — these are whole sentences ("Read-only agent
+   for exploring the codebase and planning work before implementation."), and a
+   line of its own is enough to hold one. Clamped so an outsized custom agent
+   description cannot make the row take over the menu. */
+.picker-item.stacked .picker-meta {
+  grid-area: meta;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  /* Three, not two: a narrow sidebar fits ~36 characters per line, and the
+     longest of these descriptions is 83. */
+  -webkit-line-clamp: 3;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.picker-item.stacked .picker-check {
+  grid-area: check;
+}
+
+.picker-check {
   flex: 0 0 auto;
   opacity: 0;
 }
 
-.model-item.current .model-check {
+.picker-item.current .picker-check {
   opacity: 1;
+}
+
+/* Pin, on the model rows only, mirroring the sessions list. */
+.model-pin {
+  flex: 0 0 auto;
+  cursor: pointer;
+  opacity: 0.45;
+  font-size: 12px;
+}
+
+.model-pin:hover {
+  opacity: 0.9;
+}
+
+.model-pin.on {
+  opacity: 1;
+  color: var(--vscode-charts-yellow, #e2b93d);
 }
 
 /* ---- agent map ---- */
