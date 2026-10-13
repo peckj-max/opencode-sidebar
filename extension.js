@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const crypto = require('crypto');
 
 const { OpenCodeServer } = require('./src/server');
-const { Chat } = require('./src/session');
+const { Chat, textOfContent, summarizeTool } = require('./src/session');
 const { runEvents } = require('./src/events');
 const { ActiveFileTracker, describeEditor, toAttachment, openReference } = require('./src/context');
 
@@ -466,6 +466,36 @@ function onEvent(ev) {
 
   // Event vocabulary of the opencode v2 server (verified against 2.0.22).
   switch (ev.type) {
+    // The model's reasoning, streamed before the answer it produces. A message
+    // can reason more than once, so blocks are keyed by ordinal as well.
+    case 'session.reasoning.started': {
+      const started = ev.created || Date.now();
+      reasoningStarted.set(reasoningKey(data), started);
+      provider.post({
+        type: 'reasoning-start',
+        messageID: data.assistantMessageID || data.messageID || 'assistant',
+        partID: reasoningPartId(data),
+        at: started
+      });
+      break;
+    }
+    case 'session.reasoning.delta':
+      provider.post({
+        type: 'reasoning-delta',
+        messageID: data.assistantMessageID || data.messageID || 'assistant',
+        partID: reasoningPartId(data),
+        text: data.delta || ''
+      });
+      break;
+    case 'session.reasoning.ended':
+      provider.post({
+        type: 'reasoning-end',
+        messageID: data.assistantMessageID || data.messageID || 'assistant',
+        partID: reasoningPartId(data),
+        text: data.text || '',
+        ms: takeReasoningMs(data, ev)
+      });
+      break;
     case 'session.text.delta':
       provider.post({
         type: 'delta',
@@ -541,7 +571,9 @@ function onEvent(ev) {
         state: 'running',
         id: toolId(data),
         name: tName,
-        detail: summarizeTool(tName, data.input)
+        detail: summarizeTool(tName, data.input),
+        // Behind the row: the labelled body, same fields the transcript carries.
+        input: data.input && typeof data.input === 'object' ? data.input : null
       });
       break;
     }
@@ -554,7 +586,9 @@ function onEvent(ev) {
         type: 'tool',
         state: 'ok',
         id: toolId(data),
-        name: toolNames.get(toolId(data)) || toolName(data)
+        name: toolNames.get(toolId(data)) || toolName(data),
+        result: textOfContent(data.content),
+        exit: toolExit(data)
       });
       break;
     case 'session.tool.failed':
@@ -564,7 +598,9 @@ function onEvent(ev) {
         state: 'error',
         id: toolId(data),
         name: toolNames.get(toolId(data)) || toolName(data),
-        error: extractError(data)
+        error: extractError(data),
+        result: textOfContent(data.content),
+        exit: toolExit(data)
       });
       break;
     // The agent waiting on the user. Both of these block the turn until
@@ -615,41 +651,39 @@ function toolId(data) {
   return data.toolCallID || data.toolCallId || data.callID || data.callId || data.id || '';
 }
 
+/** The exit code a tool reported, when it ran a process. */
+function toolExit(data) {
+  const meta = data && data.metadata;
+  return meta && typeof meta.exit === 'number' ? meta.exit : null;
+}
+
+/** Reasoning blocks are keyed by ordinal — one message can reason more than once. */
+function reasoningPartId(data) {
+  return `r${data.ordinal === undefined ? 0 : data.ordinal}`;
+}
+
+function reasoningKey(data) {
+  return `${data.assistantMessageID || data.messageID || 'assistant'}:${reasoningPartId(data)}`;
+}
+
+/**
+ * How long the model reasoned, from the start and end event timestamps — the
+ * server puts no duration on these events. A window reload mid-turn loses the
+ * start, in which case the row shows plain "Thinking" rather than a wrong number.
+ * @returns {number|null} milliseconds
+ */
+function takeReasoningMs(data, ev) {
+  const key = reasoningKey(data);
+  const started = reasoningStarted.get(key);
+  reasoningStarted.delete(key);
+  if (!started || !ev.created || ev.created < started) return null;
+  return ev.created - started;
+}
+
 /**
  * A short human summary of what a tool call is doing, taken from its arguments.
  * Turns "grep  done" into "grep  renderMarkdown in media/…  done".
  */
-function summarizeTool(name, input) {
-  if (!input || typeof input !== 'object') return '';
-  const clip = (v, max) => {
-    const t = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
-    const n = max || 90;
-    return t.length > n ? t.slice(0, n) + '…' : t;
-  };
-  const first = (...keys) => {
-    for (const k of keys) if (typeof input[k] === 'string' && input[k]) return input[k];
-    return '';
-  };
-  switch (String(name || '').toLowerCase()) {
-    case 'read':
-    case 'write':
-    case 'edit':
-      return clip(first('filePath', 'path'));
-    case 'grep':
-      return clip(first('pattern')) + (input.path ? ' in ' + clip(input.path, 40) : '');
-    case 'glob':
-      return clip(first('pattern'));
-    case 'bash':
-    case 'shell':
-      return clip(first('command'));
-    case 'webfetch':
-      return clip(first('url'));
-    case 'subagent':
-      return clip(first('description'));
-    default:
-      return clip(first('description', 'query', 'pattern', 'filePath', 'path', 'command', 'url', 'name', 'prompt'));
-  }
-}
 
 function toolName(data) {
   const raw = data.tool || data.name || data.toolName || data.toolID;
@@ -675,6 +709,8 @@ const deletedSessions = new Set();
 
 const subagents = new Map(); // tool call id -> {id, agent, description, childSessionId, status}
 const toolNames = new Map(); // tool call id -> tool name (permission requests carry only the id)
+/** Reasoning block ("messageID:ordinal") -> its start time, for "Thought for Ns". */
+const reasoningStarted = new Map();
 let mainAgent = null;
 let agentDescriptions = {};
 

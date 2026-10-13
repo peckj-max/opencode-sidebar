@@ -35,6 +35,20 @@
     '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="5.6" y="5.6" width="7.9" height="7.9" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M10.4 3.4H3.6a1 1 0 0 0-1 1v6.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
   const ICON_BOOKMARK =
     '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4.2 2.6h7.6v10.8L8 10.5l-3.8 2.9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+  const ICON_CHEVRON =
+    '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  /** Shell and search tools colour their output; the escape codes are noise here. */
+  function stripAnsi(text) {
+    // eslint-disable-next-line no-control-regex
+    return String(text == null ? '' : text).replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+  }
+
+  /** Claude Code's spinner glyphs, run forward then back so it rocks rather than jumps. */
+  const SPINNER_FRAMES = (() => {
+    const base = ['·', '✢', '*', '✶', '✻', '✽'];
+    return base.concat(base.slice(0, -1).reverse());
+  })();
 
   let autoContext = null;
   let autoEnabled = true;
@@ -53,7 +67,7 @@
   let thinking = null;
   let thinkingTimer = null;
   let thinkingIndex = 0;
-  let runningTools = [];
+  let wordTimer = null;
   let bookmarkItems = [];
   let bookmarkedIds = new Set();
   let sessionFilter = '';
@@ -62,7 +76,9 @@
   const responseStarts = new Map(); // assistantMessageID -> start time
   let pendingPermission = null; // { el, requestId } while an approval is unanswered
   let agentState = { main: null, items: [], running: false };
-  const bubbles = new Map(); // messageID -> record
+  let currentTurn = null; // the .turn wrapper new content lands in
+  const turns = new Map(); // assistantMessageID -> { el, body, parts, tools, actions }
+  const toolRows = new Map(); // tool call id -> its row, so a result finds its call
   const pendingRender = new Set();
   let renderScheduled = false;
 
@@ -189,64 +205,149 @@
   // ------------------------------------------------------------------- timeline
 
   /**
-   * Emit a `~~~~~~ 2026-10-11 ~~~~~~` divider whenever the day changes, so a
-   * restored session spanning several days reads in order.
+   * A day divider whenever the day changes, so a restored session spanning
+   * several days still reads in order. Drawn as wave | label | wave, the way
+   * Claude Code does it — a masked sine rule rather than repeated characters.
    */
   function ensureDateSeparator(at) {
     const key = formatDate(at);
     if (key === lastDateKey) return;
     lastDateKey = key;
     const el = document.createElement('div');
-    el.className = 'tl-date';
-    el.textContent = dateLabel(at);
+    el.className = 'divider';
+    const label = document.createElement('span');
+    label.className = 'divider-label';
+    label.textContent = dateLabel(at);
+    el.appendChild(document.createElement('span')).className = 'wave';
+    el.appendChild(label);
+    el.appendChild(document.createElement('span')).className = 'wave';
     messagesEl.appendChild(el);
     if (thinking) messagesEl.appendChild(thinking.el);
   }
 
+  /** The right-aligned time stamp, as Claude Code's `.line > .stamp`. */
   function timeLine(at) {
     const el = document.createElement('div');
-    el.className = 'tl-time';
+    el.className = 'stamp';
     el.textContent = formatTime(at);
     return el;
   }
 
-  function addItem(kind, at) {
+  /**
+   * The turn new content belongs to: the prompt and everything it produces, in
+   * one wrapper. That wrapper is what bounds the prompt's stickiness — it pins
+   * to the top while its own turn is on screen and the next turn pushes it off,
+   * which is how Claude Code does it.
+   */
+  function turnContainer() {
+    if (!currentTurn) {
+      currentTurn = document.createElement('div');
+      currentTurn.className = 'turn';
+      messagesEl.appendChild(currentTurn);
+    }
+    // Keep the spinner pinned to the bottom as new rows stream in.
+    if (thinking) messagesEl.appendChild(thinking.el);
+    return currentTurn;
+  }
+
+  /**
+   * A row on the timeline: a dot drawn on the rail by CSS, then the body. The
+   * user's own prompt is not a timeline row — see addUserMessage — which is why
+   * the rail starts at the dot below it rather than running through it.
+   *
+   * @param {string} dot '' | 'dot-success' | 'dot-failure' | 'dot-warning' | 'dot-progress'
+   */
+  function addRow(dot, at) {
     ensureDateSeparator(at || Date.now());
     const el = document.createElement('div');
-    el.className = 'tl kind-' + kind;
-    const dot = document.createElement('span');
-    dot.className = 'tl-dot';
+    el.className = 'msg tl' + (dot ? ' ' + dot : '');
     const body = document.createElement('div');
-    body.className = 'tl-body';
-    el.appendChild(dot);
+    body.className = 'body';
     el.appendChild(body);
-    messagesEl.appendChild(el);
-    // Keep the thinking row pinned to the bottom as new entries stream in.
+    turnContainer().appendChild(el);
     if (thinking) messagesEl.appendChild(thinking.el);
     return { el, body };
   }
 
-  function ensureBubble(id, kind, at) {
-    const key = id || 'assistant';
-    if (bubbles.has(key)) return bubbles.get(key);
+  /** Point a row's dot at a state: working, done, failed or needing attention. */
+  function setDot(el, dot) {
+    el.classList.remove('dot-success', 'dot-failure', 'dot-warning', 'dot-progress');
+    if (dot) el.classList.add(dot);
+  }
+
+  // --------------------------------------------------------- the assistant turn
+  //
+  // One row per assistant message, holding its blocks in the order the model
+  // produced them: reasoning disclosures, tool calls, the prose, then the
+  // copy/bookmark actions. That is Claude Code's shape — a single dot beside a
+  // stack of blocks — rather than one row per block.
+
+  function ensureTurn(messageID, at) {
+    const key = messageID || 'assistant';
+    if (turns.has(key)) return turns.get(key);
     const when = at || responseStarts.get(key) || Date.now();
     responseStarts.delete(key);
-    const { el, body } = addItem(kind || 'assistant', when);
+    const { el, body } = addRow('dot-progress', when);
     el.dataset.messageId = key;
     body.appendChild(timeLine(when));
-    const textEl = document.createElement('div');
-    textEl.className = 'tl-text md';
-    body.appendChild(textEl);
-    const rec = { id: key, el, body, textEl, parts: new Map(), raw: '', actions: null };
-    bubbles.set(key, rec);
+    const rec = { id: key, el, body, parts: new Map(), tools: new Map(), actions: null };
+    turns.set(key, rec);
     return rec;
   }
 
-  function renderBubble(rec) {
-    let out = '';
-    for (const part of rec.parts.values()) out += part.text;
-    rec.raw = out;
-    rec.textEl.innerHTML = renderMarkdown(out);
+  /** The prose block for a part id, created on first sight. */
+  function textPart(rec, partID) {
+    const key = 't' + partID;
+    if (rec.parts.has(key)) return rec.parts.get(key);
+    const el = document.createElement('div');
+    el.className = 'prose';
+    rec.body.appendChild(el);
+    const part = { kind: 'text', el, text: '' };
+    rec.parts.set(key, part);
+    return part;
+  }
+
+  /**
+   * The reasoning disclosure: "Thinking…" while it streams, then "Thought for
+   * 12s", with the reasoning itself behind it. Collapsed by default, like
+   * Claude Code's.
+   */
+  function reasoningPart(rec, partID) {
+    const key = String(partID);
+    if (rec.parts.has(key)) return rec.parts.get(key);
+    const el = document.createElement('details');
+    el.className = 'thinking';
+    const summary = document.createElement('summary');
+    summary.className = 'thinking-summary';
+    const label = document.createElement('span');
+    label.textContent = 'Thinking…';
+    const chev = document.createElement('span');
+    chev.className = 'thinking-chev';
+    chev.innerHTML = ICON_CHEVRON;
+    summary.appendChild(label);
+    summary.appendChild(chev);
+    const content = document.createElement('div');
+    content.className = 'thinking-content';
+    el.appendChild(summary);
+    el.appendChild(content);
+    rec.body.appendChild(el);
+    const part = { kind: 'reasoning', el, label, content, text: '' };
+    rec.parts.set(key, part);
+    return part;
+  }
+
+  /** The server puts no duration on the end event, so an unknown one reads "Thinking". */
+  function finishReasoning(part, ms) {
+    const known = typeof ms === 'number' && isFinite(ms) && ms >= 0;
+    part.label.textContent = known ? 'Thought for ' + Math.round(ms / 1000) + 's' : 'Thinking';
+  }
+
+  function renderReasoning(part) {
+    part.content.innerHTML = renderMarkdown(part.text);
+  }
+
+  function renderTextPart(part) {
+    part.el.innerHTML = renderMarkdown(part.text);
   }
 
   function scheduleRender(rec) {
@@ -255,7 +356,12 @@
     renderScheduled = true;
     requestAnimationFrame(() => {
       renderScheduled = false;
-      for (const r of pendingRender) renderBubble(r);
+      for (const r of pendingRender) {
+        for (const part of r.parts.values()) {
+          if (part.kind === 'reasoning') renderReasoning(part);
+          else renderTextPart(part);
+        }
+      }
       pendingRender.clear();
       scrollToBottom(false);
     });
@@ -267,7 +373,7 @@
       return;
     }
     const row = document.createElement('div');
-    row.className = 'tl-actions';
+    row.className = 'actions';
     row.dataset.text = text;
     row.dataset.messageId = rec.id;
     row.innerHTML =
@@ -288,83 +394,165 @@
     if (btn) btn.classList.toggle('on', bookmarkedIds.has(rec.actions.dataset.messageId));
   }
 
+  /**
+   * The user's own prompt: a bordered bubble, and deliberately *not* a timeline
+   * row. Claude Code keeps it outside the rail, so the next row's rail starts at
+   * its own dot rather than running through the prompt.
+   */
   function addUserMessage(text, files, at) {
-    const { body } = addItem('user', at);
-    body.appendChild(timeLine(at || Date.now()));
-    const t = document.createElement('div');
-    t.className = 'tl-text plain';
-    t.textContent = text || '(attachment only)';
-    body.appendChild(t);
+    const when = at || Date.now();
+    ensureDateSeparator(when);
+    // A prompt opens its own turn: everything the model does in response lands
+    // in the same wrapper, which is what the prompt sticks within.
+    currentTurn = document.createElement('div');
+    currentTurn.className = 'turn';
+    messagesEl.appendChild(currentTurn);
+    const el = document.createElement('div');
+    el.className = 'msg user';
+    el.appendChild(timeLine(when));
+    const bubble = document.createElement('div');
+    bubble.className = 'user-bubble';
+    bubble.textContent = text || '(attachment only)';
+    el.appendChild(bubble);
     if (files && files.length) {
       const f = document.createElement('div');
-      f.className = 'tl-files';
+      f.className = 'attachments';
       f.textContent = files.map((x) => x.name || x.uri).join(', ');
-      body.appendChild(f);
+      el.appendChild(f);
     }
+    currentTurn.appendChild(el);
+    if (thinking) messagesEl.appendChild(thinking.el);
     scrollToBottom(true);
   }
 
   function addError(message) {
     hideThinking();
-    const { body } = addItem('error');
+    const { el, body } = addRow('dot-failure');
     const t = document.createElement('div');
-    t.className = 'tl-text plain';
+    t.className = 'error-message';
     t.textContent = message;
     body.appendChild(t);
     scrollToBottom(true);
   }
 
-  /** Build one tool row: name, what it is doing, and its state. */
-  function toolRow(name, detail, state) {
-    const { el, body } = addItem('tool tool-running');
-    const inner = document.createElement('div');
-    inner.className = 'tl-tool';
+  // -- tools ----------------------------------------------------------------
+
+  /**
+   * A tool call inside its turn: one summary line, and behind it the labelled
+   * body the caller asked for — the arguments, the result, and any exit code.
+   */
+  function ensureTool(rec, id, name, detail) {
+    const key = id || name + ':' + rec.tools.size;
+    if (rec.tools.has(key)) return rec.tools.get(key);
+    const el = document.createElement('div');
+    el.className = 'tool running';
+    const line = document.createElement('div');
+    line.className = 'tool-line';
     const n = document.createElement('span');
     n.className = 'tool-name';
-    n.textContent = name;
+    n.textContent = name || 'tool';
     const d = document.createElement('span');
     d.className = 'tool-detail';
     d.textContent = detail || '';
-    const s = document.createElement('span');
-    s.className = 'tool-state';
-    s.textContent = state || 'running…';
-    inner.appendChild(n);
-    inner.appendChild(d);
-    inner.appendChild(s);
-    body.appendChild(inner);
-    return { el, stateEl: s, detailEl: d, name, id: null };
+    line.appendChild(n);
+    line.appendChild(d);
+    el.appendChild(line);
+    rec.body.appendChild(el);
+    const row = { el, detailEl: d, name: name || 'tool', input: null, result: '', exit: null, bodyEl: null };
+    rec.tools.set(key, row);
+    if (id) toolRows.set(String(id), row);
+    return row;
+  }
+
+  /** Build the expandable body, once there is something to put in it. */
+  function renderToolBody(row) {
+    const rows = [];
+    const push = (label, value) => {
+      if (value === null || value === undefined || value === '') return;
+      rows.push({ label, value: String(value) });
+    };
+    if (row.input) {
+      for (const [k, v] of Object.entries(row.input)) {
+        if (v === null || v === undefined || v === '') continue;
+        push(k, typeof v === 'object' ? JSON.stringify(v) : v);
+      }
+    }
+    push('result', stripAnsi(row.result));
+    if (typeof row.exit === 'number') push('exit', row.exit);
+    if (!rows.length) return;
+
+    const grid = document.createElement('div');
+    grid.className = 'tool-grid';
+    for (const r of rows) {
+      const line = document.createElement('div');
+      line.className = 'tool-row';
+      const l = document.createElement('div');
+      l.className = 'tool-label';
+      l.textContent = r.label;
+      const c = document.createElement('div');
+      c.className = 'tool-content';
+      c.textContent = r.value;
+      line.appendChild(l);
+      line.appendChild(c);
+      grid.appendChild(line);
+    }
+    if (!row.bodyEl) {
+      row.bodyEl = document.createElement('div');
+      row.bodyEl.className = 'tool-body';
+      row.el.appendChild(row.bodyEl);
+    }
+    row.bodyEl.innerHTML = '';
+    row.bodyEl.appendChild(grid);
+  }
+
+  /**
+   * Find the tool row a result belongs to: by call id first, then by name
+   * within the same turn, then the newest unfinished one there.
+   */
+  function findTool(rec, msg) {
+    if (msg.id && rec.tools.has(String(msg.id))) return rec.tools.get(String(msg.id));
+    if (msg.id && toolRows.has(String(msg.id))) return toolRows.get(String(msg.id));
+    const mine = [...rec.tools.values()];
+    return mine.reverse().find((r) => r.name === (msg.name || 'tool') && r.el.classList.contains('running'))
+      || mine.find((r) => r.el.classList.contains('running'))
+      || null;
   }
 
   function addTool(msg) {
-    const name = msg.name || 'tool';
-    let row = null;
+    // The tool belongs to the assistant message that called it, so its row lands
+    // inside that turn rather than as a row of its own.
+    const rec = ensureTurn(msg.messageID, msg.at);
+    // A result can arrive with no call to match — the call event was missed, or
+    // the stream reconnected mid-tool — so fall back to making the row.
+    const row = msg.state === 'running'
+      ? ensureTool(rec, msg.id, msg.name, msg.detail)
+      : findTool(rec, msg) || ensureTool(rec, msg.id, msg.name, msg.detail);
 
     if (msg.state === 'running') {
-      row = toolRow(name, msg.detail, 'running…');
-      row.id = msg.id;
-      runningTools.push(row);
+      if (msg.input) row.input = msg.input;
+      renderToolBody(row);
+      setDot(rec.el, 'dot-progress');
     } else {
-      row =
-        (msg.id && runningTools.find((r) => r.id === msg.id)) ||
-        runningTools.find((r) => r.name === name) ||
-        runningTools[runningTools.length - 1] ||
-        null;
-      if (row) runningTools = runningTools.filter((r) => r !== row);
-      if (!row) row = toolRow(name, msg.detail, '');
+      const ok = msg.state === 'ok';
+      row.el.classList.remove('running', 'ok', 'error');
+      row.el.classList.add(ok ? 'ok' : 'error');
+      if (msg.input) row.input = msg.input;
+      if (msg.result) row.result = msg.result;
+      if (typeof msg.exit === 'number') row.exit = msg.exit;
+      if (!ok && msg.error) row.detailEl.textContent = msg.error;
+      renderToolBody(row);
+      // The turn's dot is not touched here: a tool failing is ordinary — a grep
+      // that matches nothing, a test that fails — and the row itself already
+      // turns red. Only the turn's own outcome settles the dot, at turn-end.
     }
-
-    const ok = msg.state === 'ok';
-    const bad = msg.state === 'error';
-    row.el.className = 'tl kind-tool' + (ok ? ' tool-ok' : bad ? ' tool-error' : ' tool-running');
-    row.stateEl.textContent = ok ? 'done' : bad ? 'failed' : 'running…';
-    if (bad && msg.error && row.detailEl) row.detailEl.textContent = msg.error;
     scrollToBottom(false);
   }
 
   function clearMessages() {
     messagesEl.innerHTML = '';
-    bubbles.clear();
-    runningTools = [];
+    turns.clear();
+    toolRows.clear();
+    currentTurn = null;
     thinking = null;
     pendingPermission = null;
     lastDateKey = null;
@@ -374,40 +562,42 @@
 
   // --------------------------------------------------------------- busy/thinking
 
-  function paintWord(animate) {
-    const el = thinking && thinking.inner.querySelector('.thinking-word');
-    if (!el) return;
-    el.textContent = THINKING_WORDS[thinkingIndex];
-    if (animate) {
-      el.classList.remove('swap');
-      void el.offsetWidth;
-      el.classList.add('swap');
-    }
-  }
-
+  /**
+   * The working indicator: a glyph cycling through Claude Code's frames beside a
+   * rotating verb. It is not a timeline row — no dot, no indent — because it
+   * belongs to the turn being generated rather than being a turn of its own.
+   */
   function showThinking() {
     if (thinking) return;
     thinkingIndex = Math.floor(Math.random() * THINKING_WORDS.length);
-    const { el, body } = addItem('thinking');
-    const inner = document.createElement('div');
-    inner.className = 'tl-thinking';
-    inner.innerHTML =
-      '<span class="dots"><i></i><i></i><i></i></span><span class="thinking-word"></span><span class="thinking-ellipsis">…</span>';
-    body.appendChild(inner);
-    thinking = { el, inner };
-    paintWord(false);
+    const el = document.createElement('div');
+    el.className = 'msg spinner-row';
+    const glyph = document.createElement('span');
+    glyph.className = 'spinner-glyph';
+    glyph.textContent = SPINNER_FRAMES[0];
+    const text = document.createElement('span');
+    text.className = 'spinner-text';
+    text.textContent = THINKING_WORDS[thinkingIndex] + '…';
+    el.appendChild(glyph);
+    el.appendChild(text);
+    messagesEl.appendChild(el);
+    thinking = { el, glyph, text, frame: 0 };
     thinkingTimer = setInterval(() => {
+      thinking.frame = (thinking.frame + 1) % SPINNER_FRAMES.length;
+      glyph.textContent = SPINNER_FRAMES[thinking.frame];
+    }, 120);
+    // The verb turns over far more slowly than the glyph.
+    wordTimer = setInterval(() => {
       thinkingIndex = (thinkingIndex + 1) % THINKING_WORDS.length;
-      paintWord(true);
-    }, 1700);
+      text.textContent = THINKING_WORDS[thinkingIndex] + '…';
+    }, 2400);
     scrollToBottom(false);
   }
 
   function hideThinking() {
-    if (thinkingTimer) {
-      clearInterval(thinkingTimer);
-      thinkingTimer = null;
-    }
+    for (const t of [thinkingTimer, wordTimer]) if (t) clearInterval(t);
+    thinkingTimer = null;
+    wordTimer = null;
     if (thinking) {
       thinking.el.remove();
       thinking = null;
@@ -435,18 +625,66 @@
     else hideThinking();
   }
 
-  function lastAssistantRec() {
-    const ids = Array.from(bubbles.keys());
-    for (let i = ids.length - 1; i >= 0; i--) {
-      const rec = bubbles.get(ids[i]);
-      if (rec && rec.el.classList.contains('kind-assistant')) return rec;
+  /** The turn a finished response belongs to, for its dot and its actions. */
+  function lastTurn() {
+    const ids = Array.from(turns.keys());
+    return ids.length ? turns.get(ids[ids.length - 1]) : null;
+  }
+
+  /** The prose of a turn, which is what Copy and Bookmark act on. */
+  function turnText(rec) {
+    let out = '';
+    for (const part of rec.parts.values()) if (part.kind === 'text') out += part.text;
+    return out;
+  }
+
+  /**
+   * Replay a restored message's blocks in the order the model produced them.
+   * The transcript carries reasoning and tool blocks as well as prose; before
+   * this the restored view showed only the prose, so a long working session
+   * read as a few disconnected paragraphs.
+   */
+  function renderBlocks(rec, m) {
+    const blocks = m.blocks || [];
+    if (!blocks.length) {
+      if (m.text && m.text.trim()) {
+        const part = textPart(rec, '0');
+        part.text = m.text;
+        renderTextPart(part);
+      }
+      return;
     }
-    return null;
+    let n = 0;
+    for (const b of blocks) {
+      if (b.kind === 'text') {
+        const part = textPart(rec, String(n++));
+        part.text = b.text || '';
+        renderTextPart(part);
+      } else if (b.kind === 'reasoning') {
+        const part = reasoningPart(rec, 'r' + n++);
+        part.text = b.text || '';
+        finishReasoning(part, b.ms);
+        renderReasoning(part);
+      } else if (b.kind === 'tool') {
+        const row = ensureTool(rec, b.id, b.name, b.detail);
+        row.input = b.input;
+        row.result = b.result;
+        row.exit = b.exit;
+        row.el.classList.remove('running');
+        row.el.classList.add(b.status === 'failed' ? 'error' : 'ok');
+        renderToolBody(row);
+      }
+    }
   }
 
   function finishTurn() {
-    const rec = lastAssistantRec();
-    if (rec && rec.raw) ensureActions(rec, rec.raw);
+    const rec = lastTurn();
+    if (rec) {
+      const text = turnText(rec);
+      if (text.trim()) ensureActions(rec, text);
+      // The turn's own outcome settles the dot: green, or red if it failed.
+      if (!rec.el.classList.contains('dot-failure')) setDot(rec.el, 'dot-success');
+    }
     setBusy(false);
   }
 
@@ -1038,7 +1276,7 @@
 
   function addPermissionCard(msg) {
     hideThinking();
-    const { el, body } = addItem('permission');
+    const { el, body } = addRow('dot-warning');
     const c = card(body);
     const title = document.createElement('div');
     title.className = 'card-title';
@@ -1087,7 +1325,7 @@
 
   function addFormCard(form) {
     hideThinking();
-    const { el, body } = addItem('form');
+    const { el, body } = addRow('dot-warning');
     const c = card(body);
 
     const title = document.createElement('div');
@@ -1204,17 +1442,37 @@
         break;
       case 'delta': {
         hideThinking();
-        const rec = ensureBubble(msg.messageID, 'assistant', msg.at);
-        const part = rec.parts.get(msg.partID) || { text: '', delta: false };
+        const rec = ensureTurn(msg.messageID, msg.at);
+        const part = textPart(rec, msg.partID);
         part.text += msg.text;
-        part.delta = true;
-        rec.parts.set(msg.partID, part);
         scheduleRender(rec);
         break;
       }
       case 'part': {
-        const rec = ensureBubble(msg.messageID, 'assistant', msg.at);
-        rec.parts.set(msg.partID, { text: msg.text, delta: false });
+        const rec = ensureTurn(msg.messageID, msg.at);
+        textPart(rec, msg.partID).text = msg.text;
+        scheduleRender(rec);
+        break;
+      }
+      case 'reasoning-start':
+        // The disclosure opens as soon as the model starts thinking, so it is
+        // visible while it streams rather than only once it lands.
+        hideThinking();
+        reasoningPart(ensureTurn(msg.messageID, msg.at), msg.partID);
+        scrollToBottom(false);
+        break;
+      case 'reasoning-delta': {
+        const rec = ensureTurn(msg.messageID, msg.at);
+        const part = reasoningPart(rec, msg.partID);
+        part.text += msg.text;
+        scheduleRender(rec);
+        break;
+      }
+      case 'reasoning-end': {
+        const rec = ensureTurn(msg.messageID, msg.at);
+        const part = reasoningPart(rec, msg.partID);
+        if (msg.text) part.text = msg.text;
+        finishReasoning(part, msg.ms);
         scheduleRender(rec);
         break;
       }
@@ -1228,10 +1486,13 @@
           if (m.role === 'user') {
             addUserMessage(m.text, m.files, m.at);
           } else {
-            const rec = ensureBubble(m.id, 'assistant', m.at);
-            rec.parts.set('text', { text: m.text, delta: false });
-            renderBubble(rec);
-            ensureActions(rec, m.text);
+            const rec = ensureTurn(m.id, m.at);
+            renderBlocks(rec, m);
+            // A restored turn is finished by definition — it should not blink
+            // as though it were still working.
+            setDot(rec.el, 'dot-success');
+            const text = turnText(rec);
+            if (text.trim()) ensureActions(rec, text);
           }
         }
         // Land on the newest turn. Scrolling twice covers late layout shifts
@@ -1288,7 +1549,7 @@
       case 'bookmarks':
         bookmarkItems = msg.items || [];
         bookmarkedIds = new Set(bookmarkItems.map((b) => b.messageId));
-        for (const rec of bubbles.values()) applyBookmark(rec);
+        for (const rec of turns.values()) applyBookmark(rec);
         renderBookmarks();
         break;
       case 'focus-message':
@@ -1447,7 +1708,7 @@
   messagesEl.addEventListener('click', (e) => {
     const act = e.target.closest('.act');
     if (act) {
-      const row = act.closest('.tl-actions');
+      const row = act.closest('.actions');
       const text = (row && row.dataset.text) || '';
       if (act.dataset.act === 'copy') {
         vscode.postMessage({ type: 'copyText', text: text });

@@ -8,11 +8,13 @@
   --oc-input-border: var(--vscode-inlineChatInput-border, var(--vscode-input-border, var(--vscode-widget-border, rgba(127, 127, 127, 0.4))));
   --oc-focus-ring: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder, #0078d4));
 
-  /* Timeline dot colours, one per kind of entry. */
-  --oc-dot-user: #4a9eff;
+  /* Timeline dots take Claude Code's palette: one neutral colour, with green,
+     red and amber reserved for status, so colour always means something. */
+  --oc-dot-success: #74c991;
+  --oc-dot-failure: #c74e39;
+  --oc-dot-warning: #e1c08d;
+  /* The agent map keeps its own scheme, matching the composer button. */
   --oc-dot-assistant: #3fb950;
-  --oc-dot-thinking: #a371f7;
-  --oc-dot-tool: #d29922;
   --oc-dot-error: #f85149;
   --oc-dot-stopped: #8b949e;
   --oc-rail: var(--vscode-panel-border);
@@ -302,103 +304,133 @@ body {
 }
 
 /* ------------------------------------------------------------------- timeline */
+/* Geometry, dot palette and rail mechanics all follow the Claude Code
+   extension: a 7px dot at left 9px, a 1px rail at left 12px, and the body
+   indented 30px. The rail starts at the dot when the row above it is not itself
+   a timeline row — the user's own prompt is not one — and stops short of the
+   last row rather than trailing into empty space. */
 
 .messages {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 10px 10px 4px;
+  /* No top padding: a sticking prompt supplies its own, and would otherwise
+     leave a band of scrolling content above it. */
+  padding: 0 10px 4px;
 }
 
-.tl {
+/* A prompt and everything it produced, in one wrapper. position: sticky is
+   bounded by the nearest block ancestor, so this is what makes a prompt pin to
+   the top while its own turn is on screen and get pushed off by the next one. */
+.turn {
+  display: flow-root;
+}
+
+/* The prompt, pinned to the top of the content area for as long as its turn is
+   visible. The gradient is the point: content scrolling underneath fades out
+   over the last 12px instead of being cut off at a hard edge. */
+.turn > .msg.user {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-top: 14px;
+  padding-bottom: 12px;
+  /* Bleed into the container's gutters so nothing shows past the edges. */
+  margin-left: -10px;
+  margin-right: -10px;
+  padding-left: 10px;
+  padding-right: 10px;
+  background-image: linear-gradient(
+    to bottom,
+    var(--vscode-sideBar-background) calc(100% - 12px),
+    transparent 100%
+  );
+}
+
+.msg {
   position: relative;
-  padding-left: 20px;
-  margin-bottom: 12px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
-/* Continuous rail between entries; hidden on the last one so it does not trail. */
-.tl::before {
+/* A row on the timeline. The user's prompt deliberately has neither class. */
+.msg.tl {
+  padding-left: 30px;
+}
+
+/* The dot. */
+.msg.tl::before {
   content: '';
   position: absolute;
-  left: 4px;
-  top: 5px;
-  bottom: -12px;
-  width: 1px;
-  background: var(--oc-rail);
-}
-
-.tl:last-child::before {
-  display: none;
-}
-
-/* Centred on the rail (4.5px) and on the first line of text (9.5px), so the
-   offsets are shrunk along with the size rather than the dot drifting. */
-.tl-dot {
-  position: absolute;
-  left: 1px;
-  top: 6px;
+  left: 9px;
+  top: 15px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--vscode-descriptionForeground);
-  box-shadow: 0 0 0 2px var(--vscode-sideBar-background);
+  z-index: 1;
 }
 
-.kind-user .tl-dot {
-  background: var(--oc-dot-user);
+/* The rail. */
+.msg.tl::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--vscode-panel-border);
 }
 
-.kind-assistant .tl-dot {
-  background: var(--oc-dot-assistant);
+/* Following the user's prompt, the rail begins at the dot instead of running
+   up behind it. */
+.msg.tl:not(.tl + .tl)::after {
+  top: 18px;
 }
 
-.kind-thinking .tl-dot {
-  background: var(--oc-dot-thinking);
-  animation: pulse 1.4s ease-in-out infinite;
+/* The last row's rail stops just past its dot. */
+.msg.tl:not(:has(+ .tl))::after {
+  height: 18px;
 }
 
-.kind-tool.tool-running .tl-dot {
-  background: var(--oc-dot-tool);
-  animation: pulse 1.4s ease-in-out infinite;
+/* A row with neither a predecessor nor a successor gets no rail at all. */
+.msg.tl:not(.tl + .tl):not(:has(+ .tl))::after {
+  display: none;
 }
 
-.kind-tool.tool-ok .tl-dot {
-  background: var(--oc-dot-assistant);
+/* Status is the only thing that colours a dot. */
+.msg.tl.dot-success::before {
+  background: var(--oc-dot-success);
 }
 
-.kind-tool.tool-error .tl-dot,
-.kind-error .tl-dot {
-  background: var(--oc-dot-error);
+.msg.tl.dot-failure::before {
+  background: var(--oc-dot-failure);
 }
 
-/* The agent waiting on you: amber, pulsing until answered. */
-.kind-permission .tl-dot,
-.kind-form .tl-dot {
-  background: var(--oc-dot-tool);
+.msg.tl.dot-warning::before {
+  background: var(--oc-dot-warning);
 }
 
-.kind-permission.pending .tl-dot,
-.kind-form.pending .tl-dot {
-  animation: pulse 1.4s ease-in-out infinite;
+/* Working: the dot blinks rather than throbbing. */
+.msg.tl.dot-progress::before {
+  animation: blink 1s linear infinite;
 }
 
-@keyframes pulse {
+@keyframes blink {
   0%,
   100% {
-    transform: scale(1);
     opacity: 1;
   }
   50% {
-    transform: scale(1.35);
-    opacity: 0.6;
+    opacity: 0.2;
   }
 }
 
-.tl-body {
+.body {
   min-width: 0;
 }
 
 /* Highlight applied briefly after jumping to a bookmarked response. */
-.tl.flash .tl-body {
+.msg.flash .body {
   border-radius: 6px;
   animation: flash 1.6s ease;
 }
@@ -415,118 +447,139 @@ body {
   }
 }
 
-.kind-user .tl-body {
+/* The user's own prompt: a bordered bubble, and not a timeline row — no dot, no
+   indent, exactly as Claude Code renders it. */
+.user-bubble {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--oc-input-border);
+  border-radius: 6px;
   background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 7px;
-  padding: 5px 8px;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 
-.kind-error .tl-text {
-  color: var(--vscode-errorForeground);
-}
-
-.tl-files {
+.attachments {
   margin-top: 4px;
   font-size: 11px;
   opacity: 0.7;
 }
 
-/* Day divider: ~~~~~~~~ 2026-10-11 ~~~~~~~~ */
-.tl-date {
+.error-message {
+  color: var(--vscode-errorForeground);
+  background: color-mix(in srgb, var(--vscode-errorForeground) 15%, transparent);
+  border: 1px solid var(--vscode-errorForeground);
+  border-radius: 4px;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* Day divider: wave | Fri, Oct 9 | wave. The waves are a repeating sine curve
+   used as a mask over the current colour, which is how Claude Code draws it —
+   not a run of "~" characters. */
+.divider {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 14px 0 9px;
-  font-size: 12px;
-  letter-spacing: 0.06em;
+  gap: 10px;
+  padding: 8px 0;
   color: var(--vscode-descriptionForeground);
-  opacity: 0.7;
   user-select: none;
 }
 
-.tl-date::before,
-.tl-date::after {
-  content: '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~';
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
+.divider .wave {
+  flex: 1;
+  min-width: 32px;
+  height: 7px;
+  background-color: currentColor;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg width='14' height='7' viewBox='0 0 14 7' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 3.5 Q 3.5 0, 7 3.5 T 14 3.5' fill='none' stroke='black' stroke-width='1'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg width='14' height='7' viewBox='0 0 14 7' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 3.5 Q 3.5 0, 7 3.5 T 14 3.5' fill='none' stroke='black' stroke-width='1'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  -webkit-mask-position: left center;
+  mask-position: left center;
+}
+
+.divider-label {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  font-size: 0.9em;
 }
 
-/* Time of a prompt / the start of a response, right-aligned. */
-/* Matches Claude Code's per-item timestamp (.itemTime): the muted
-   descriptionForeground at full opacity, with no extra dimming. */
-.tl-time {
-  width: 100%;
+/* The per-message timestamp, right-aligned above the block it belongs to. */
+.stamp {
   text-align: right;
-  font-size: 11px;
+  font-size: 0.85em;
+  line-height: 16px;
   color: var(--vscode-descriptionForeground);
-  margin-bottom: 3px;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
-}
-
-.tl-text.plain {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.45;
+  cursor: default;
+  margin-bottom: 2px;
 }
 
 /* ---- rendered markdown ---- */
 
-.tl-text.md {
+.prose {
   white-space: normal;
   line-height: 1.5;
   word-break: break-word;
+  user-select: text;
 }
 
-.tl-text.md > *:first-child {
+.prose > *:first-child {
   margin-top: 0;
 }
 
-.tl-text.md > *:last-child {
+.prose > *:last-child {
   margin-bottom: 0;
 }
 
-.tl-text.md p {
+.prose p {
   margin: 0 0 8px;
 }
 
-.tl-text.md h1,
-.tl-text.md h2,
-.tl-text.md h3,
-.tl-text.md h4,
-.tl-text.md h5,
-.tl-text.md h6 {
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
   margin: 12px 0 6px;
   font-size: 1.05em;
   font-weight: 600;
 }
 
-.tl-text.md ul,
-.tl-text.md ol {
+.prose ul,
+.prose ol {
   margin: 0 0 8px;
   padding-left: 20px;
 }
 
-.tl-text.md li {
+.prose li {
   margin: 2px 0;
 }
 
-.tl-text.md blockquote {
+.prose blockquote {
   margin: 0 0 8px;
   padding-left: 8px;
   border-left: 2px solid var(--vscode-panel-border);
   opacity: 0.9;
 }
 
-.tl-text.md hr {
+.prose hr {
   border: none;
   border-top: 1px solid var(--vscode-panel-border);
   margin: 10px 0;
 }
 
-.tl-text.md code {
+.prose code {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.94em;
   background: var(--vscode-textCodeBlock-background);
@@ -534,7 +587,7 @@ body {
   border-radius: 3px;
 }
 
-.tl-text.md pre.code {
+.prose pre.code {
   margin: 0 0 8px;
   padding: 8px 10px;
   background: var(--vscode-textCodeBlock-background);
@@ -542,57 +595,65 @@ body {
   overflow-x: auto;
 }
 
-.tl-text.md pre.code code {
+.prose pre.code code {
   background: transparent;
   padding: 0;
   white-space: pre;
 }
 
 /* File links inside a code span should still read as clickable. */
-.tl-text.md code a {
+.prose code a {
   color: var(--vscode-textLink-foreground);
   text-decoration: none;
   cursor: pointer;
 }
 
-.tl-text.md code a:hover {
+.prose code a:hover {
   text-decoration: underline;
 }
 
-.tl-text.md a {
+.prose a {
   color: var(--vscode-textLink-foreground);
   text-decoration: none;
   cursor: pointer;
 }
 
-.tl-text.md a:hover {
+.prose a:hover {
   text-decoration: underline;
 }
 
-.tl-text.md strong {
+.prose strong {
   font-weight: 600;
 }
 
-/* ---- tool rows ---- */
+/* ---- tool calls ---- */
+/* A one-line summary, and behind it the labelled body: the arguments, the
+   result and any exit code — the shape Claude Code gives a tool call. */
 
-.tl-tool {
+.tool {
+  margin: 8px 0;
+}
+
+.tool-line {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: 12px;
+  line-height: 1.5;
 }
 
 .tool-name {
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11px;
   flex: 0 0 auto;
+  font-weight: 700;
 }
 
 .tool-detail {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  font-size: 11px;
-  opacity: 0.8;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  opacity: 0.75;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -602,26 +663,77 @@ body {
   display: none;
 }
 
-.tool-state {
-  flex: 0 0 auto;
-  font-size: 11px;
-  opacity: 0.6;
-}
-
-.tool-error .tool-state {
+/* A failed call should be readable at a glance, without opening the body. */
+.tool.error .tool-detail {
   color: var(--vscode-errorForeground);
   opacity: 1;
 }
 
+.tool-body {
+  margin-top: 4px;
+  border: 0.5px solid var(--oc-input-border);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--vscode-input-background) 60%, transparent);
+  overflow: hidden;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+}
+
+.tool-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  border-top: 0.5px solid var(--oc-input-border);
+  padding: 4px;
+}
+
+.tool-row:first-child {
+  border-top: none;
+}
+
+.tool-label {
+  grid-column: 1;
+  padding: 4px 8px 4px 4px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.5;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  text-align: left;
+}
+
+.tool-content {
+  grid-column: 2;
+  margin: 0;
+  padding: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+}
+
+/* Long output fades out rather than making the row enormous; Claude Code clips
+   at 60px with the same gradient. */
+.tool-row:last-child .tool-content {
+  max-height: 60px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 50px, transparent 60px);
+  mask-image: linear-gradient(to bottom, #000 50px, transparent 60px);
+}
+
 /* ---- response actions ---- */
 
-.tl-actions {
+.actions {
   display: flex;
+  align-items: center;
   gap: 2px;
+  height: 16px;
   margin-top: 6px;
 }
 
-.tl-actions .act {
+.actions .act {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -635,21 +747,23 @@ body {
   opacity: 0.55;
 }
 
-.tl-actions .act:hover {
+.actions .act:hover {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 }
 
-.tl-actions .act.on {
+.actions .act.on {
   opacity: 1;
   color: var(--vscode-charts-yellow, #e2b93d);
 }
 
-.tl-actions .act.on svg path {
+.actions .act.on svg path {
   fill: currentColor;
 }
 
 /* ---- inline ask cards (permission / form) ---- */
+/* Claude Code's permission container: the input surface's background and border,
+   a ring while it holds focus, and the pending state dropped once answered. */
 
 .card {
   display: flex;
@@ -657,23 +771,32 @@ body {
   gap: 6px;
   padding: 8px 10px;
   border-radius: 9px;
-  border: 1px solid var(--oc-dot-tool);
-  background: color-mix(in srgb, var(--oc-dot-tool) 10%, transparent);
+  border: 1px solid var(--oc-input-border);
+  background: var(--vscode-input-background);
+  transition: border-color 0.15s ease;
 }
 
-.kind-permission.settled .card,
-.kind-form.settled .card {
+.msg.pending .card {
+  border-color: #e1c08d;
+  background: color-mix(in srgb, #e1c08d 8%, var(--vscode-input-background));
+}
+
+.msg.pending .card:focus-within {
+  border-color: var(--oc-focus-ring);
+}
+
+.msg.settled .card {
   border-color: var(--vscode-panel-border);
   background: transparent;
 }
 
 .card-title {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .card-detail {
-  font-size: 11px;
-  opacity: 0.8;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--vscode-editor-font-family, monospace);
@@ -726,73 +849,86 @@ body {
 }
 
 /* ---- thinking ---- */
+/* A collapsed disclosure: "Thinking…" while the model reasons, then "Thought for
+   12s", with the reasoning behind it. Claude Code's shape. */
 
-.tl-thinking {
+.thinking {
+  margin: 2px 0;
+}
+
+.thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.8;
+  font-style: italic;
+  user-select: none;
+}
+
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking[open] .thinking-summary,
+.thinking-summary:hover {
+  opacity: 1;
+}
+
+.thinking-chev {
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.thinking[open] .thinking-chev {
+  transform: rotate(90deg);
+}
+
+.thinking-content {
+  margin-top: 4px;
+  color: var(--vscode-descriptionForeground);
+  font-weight: 400;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ---- working indicator ---- */
+/* A glyph cycling beside a rotating verb. Not a timeline row: no dot, no
+   indent, because it belongs to the turn being generated rather than being a
+   turn of its own. */
+
+.spinner-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  height: 1.85em;
+  padding-top: 4px;
+  color: var(--vscode-foreground);
+  animation: fadein 0.3s ease-in-out;
 }
 
-.thinking-word {
-  display: inline-block;
-  font-size: 12px;
-}
-
-.thinking-word.swap {
-  animation: wordswap 0.36s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.thinking-ellipsis {
-  font-size: 12px;
-  margin-left: -6px;
-  opacity: 0.6;
-}
-
-@keyframes wordswap {
+@keyframes fadein {
   from {
     opacity: 0;
-    transform: translateY(5px);
-    filter: blur(2px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
   }
 }
 
-.dots {
-  display: inline-flex;
-  gap: 3px;
+.spinner-glyph {
+  display: inline-block;
+  width: 1.5em;
+  text-align: center;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 1.2em;
+  color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
 }
 
-.dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: bounce 1.2s ease-in-out infinite;
-}
-
-.dots i:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.dots i:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes bounce {
-  0%,
-  70%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.45;
-  }
-  35% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
+.spinner-text {
+  font-weight: 500;
 }
 
 .hidden {
@@ -1079,6 +1215,19 @@ textarea#input::placeholder {
 }
 
 /* ---- agent map ---- */
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.6;
+  }
+}
+
 
 .agents-btn {
   display: inline-flex;

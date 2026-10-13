@@ -317,16 +317,20 @@ function toTranscript(rows) {
     // Assistant messages carry a content[] array of parts; user messages put
     // their text at the top level instead, so both shapes must be read.
     const parts = Array.isArray(m.content) ? m.content : Array.isArray(m.parts) ? m.parts : [];
+    const blocks = blocksFromParts(parts);
     let text = parts
       .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
       .map((p) => p.text)
       .join('');
     if (!text && typeof m.text === 'string') text = m.text;
-    if (!text.trim()) continue;
+    // A message may hold only reasoning or tool parts — that is still a turn,
+    // and dropping it is what made restored sessions read as if nothing ran.
+    if (!text.trim() && !blocks.length) continue;
     out.push({
       id: m.id,
       role: m.type === 'user' ? 'user' : 'assistant',
       text,
+      blocks,
       files: Array.isArray(m.files)
         ? m.files.map((f) => ({ name: (f && (f.name || f.filename)) || '' })).filter((f) => f.name)
         : [],
@@ -337,6 +341,100 @@ function toTranscript(rows) {
   // conversation reads in order and the latest turn ends up at the bottom.
   if (out.length > 1 && out[0].at > out[out.length - 1].at) out.reverse();
   return out;
+}
+
+/**
+ * One line describing what a tool call was asked to do — the file, the pattern,
+ * the command. Shared by the live event path and the transcript builder so a
+ * restored session reads the same as the turn that produced it.
+ * @returns {string} empty when the arguments say nothing useful
+ */
+function summarizeTool(name, input) {
+  if (!input || typeof input !== 'object') return '';
+  const clip = (v, max) => {
+    const t = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+    const n = max || 90;
+    return t.length > n ? t.slice(0, n) + '…' : t;
+  };
+  const first = (...keys) => {
+    for (const k of keys) if (typeof input[k] === 'string' && input[k]) return input[k];
+    return '';
+  };
+  switch (String(name || '').toLowerCase()) {
+    case 'read':
+    case 'write':
+    case 'edit':
+      return clip(first('filePath', 'path'));
+    case 'grep':
+      return clip(first('pattern')) + (input.path ? ' in ' + clip(input.path, 40) : '');
+    case 'glob':
+      return clip(first('pattern'));
+    case 'bash':
+    case 'shell':
+      return clip(first('command'));
+    case 'webfetch':
+      return clip(first('url'));
+    case 'subagent':
+      return clip(first('description'));
+    default:
+      return clip(first('description', 'query', 'pattern', 'filePath', 'path', 'command', 'url', 'name', 'prompt'));
+  }
+}
+
+/**
+ * An assistant message's parts, in the order the model produced them, as the
+ * content area renders them. Prose stays prose; reasoning collapses to a
+ * "Thought for Ns" disclosure; a tool becomes a one-line summary with its input
+ * and result behind it. Shapes verified against a live turn.
+ *
+ * @returns {Array<{kind:'text'|'reasoning'|'tool'}>}
+ */
+function blocksFromParts(parts) {
+  const blocks = [];
+  for (const p of parts || []) {
+    if (!p || !p.type) continue;
+    if (p.type === 'text') {
+      if (typeof p.text === 'string') blocks.push({ kind: 'text', text: p.text });
+    } else if (p.type === 'reasoning') {
+      if (typeof p.text === 'string') {
+        blocks.push({ kind: 'reasoning', text: p.text, ms: elapsedMs(p.time) });
+      }
+    } else if (p.type === 'tool') {
+      const state = p.state || {};
+      const meta = state.metadata || {};
+      blocks.push({
+        kind: 'tool',
+        id: p.id || '',
+        name: p.name || 'tool',
+        detail: summarizeTool(p.name, state.input),
+        input: state.input && typeof state.input === 'object' ? state.input : null,
+        result: textOfContent(state.content),
+        status: state.status || (state.error ? 'failed' : 'completed'),
+        exit: typeof meta.exit === 'number' ? meta.exit : null,
+        ms: elapsedMs(p.time, 'ran')
+      });
+    }
+  }
+  return blocks;
+}
+
+/**
+ * Wall-clock the server recorded for a part. Tool parts time the run
+ * (`ran` → `completed`), reasoning parts the thought (`created` → `completed`).
+ * @returns {number|null} milliseconds, or null when it did not record both ends
+ */
+function elapsedMs(time, from = 'created') {
+  const t = time || {};
+  const start = t[from];
+  const end = t.completed;
+  if (!start || !end || end < start) return null;
+  return end - start;
+}
+
+/** The text of a part's `state.content[]`, which is where tool output lands. */
+function textOfContent(content) {
+  if (!Array.isArray(content)) return '';
+  return content.map((c) => (c && typeof c.text === 'string' ? c.text : '')).join('');
 }
 
 /**
@@ -428,9 +526,7 @@ function agentsFromMessages(rows) {
       const state = p.state || {};
       const input = state.input || {};
       if (!input.agent) continue;
-      const text = Array.isArray(state.content)
-        ? state.content.map((c) => (c && typeof c.text === 'string' ? c.text : '')).join('')
-        : '';
+      const text = textOfContent(state.content);
       const child = text.match(/<subagent[^>]*\bsessionID="([^"]+)"/i);
       const blockState = text.match(/<subagent[^>]*\bstate="([a-z]+)"/i);
       items.push({
@@ -445,4 +541,11 @@ function agentsFromMessages(rows) {
   return { main, items };
 }
 
-module.exports = { Chat, toTranscript, agentsFromMessages, selectionFrom };
+module.exports = {
+  Chat,
+  toTranscript,
+  agentsFromMessages,
+  selectionFrom,
+  textOfContent,
+  summarizeTool
+};

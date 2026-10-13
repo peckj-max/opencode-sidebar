@@ -12,6 +12,19 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   editor right-click entry. Adds the selection or whole file as a staged attachment chip.
   (`Ctrl+Shift+L` is deliberately avoided — it is VS Code's *Select All Occurrences of Find Match*.)
 - **Open referenced files** — click a `path:line` the assistant mentions to open it in the editor.
+- **A transcript that shows the work** — the content area follows the Claude Code extension's
+  rendering. Each assistant turn is one row on the timeline carrying its blocks in order: a
+  collapsed **Thinking** disclosure that reads "Thought for 12s" and holds the model's reasoning,
+  the **tool calls** with an expandable body of labelled rows (arguments, result, exit code), the
+  prose, and the copy/bookmark actions. The dot beside a row takes one neutral colour, with green,
+  red and amber reserved for status. Your own prompt is a bordered bubble and deliberately *not* a
+  timeline row, exactly as Claude Code treats it. A day divider is drawn as a wave | label | wave.
+  Reasoning and tool output survive a restore — `toTranscript` keeps them rather than discarding
+  everything but the prose.
+- **The prompt sticks while you read its answer** — each prompt and everything it produced sit in
+  one turn wrapper, and the prompt is `position: sticky` within it, so it pins to the top of the
+  content area while its turn is on screen and the next turn pushes it off. Its background fades
+  out over the last 12px so the answer scrolling underneath is not cut off at a hard edge.
 - **Agent, model and variant pickers** — the composer bar carries three dropdowns: the primary
   agent (`build`, `plan`), the model, and the model's reasoning-effort variant. Variants come
   from the model itself, so the list differs per model (`low`/`high`/`max` on one, `none` … `max`
