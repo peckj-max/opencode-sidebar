@@ -42,6 +42,7 @@ class Chat {
         const stored = (r && r.data) || r;
         if (stored && (stored.id || stored.data)) {
           this.adoptSessionDirectory(stored);
+          await this.pinModel(this.sessionId, stored);
           return this.sessionId;
         }
       } catch (err) {
@@ -50,6 +51,35 @@ class Chat {
       }
     }
     return this.newSession();
+  }
+
+  /**
+   * A session can exist with no model of its own — made by another client, or
+   * left over from before one was chosen — and the server then answers its
+   * prompts with *its* default, which can be a free model that was never
+   * selected. Such a session silently ignores the composer's model, so pin ours
+   * to it before a prompt goes out.
+   *
+   * Posts directly rather than going through setModel(): that calls
+   * ensureSession(), which calls back in here.
+   * @param {string} id session to pin
+   * @param {any} session its current state, to skip work when it has a model
+   * @returns {Promise<boolean>} true when a model was applied
+   */
+  async pinModel(id, session) {
+    if (session && session.model && session.model.id) return false;
+    if (!this.defaultModelRef) return false;
+    try {
+      await this.server.request('POST', `/api/session/${id}/model`, {
+        body: { model: this.defaultModelRef }
+      });
+      const ref = this.defaultModelRef;
+      this.log(`[chat] session had no model; applied ${ref.providerID}/${ref.id}`);
+      return true;
+    } catch (err) {
+      this.log(`[chat] could not apply the model: ${err.message}`);
+      return false;
+    }
   }
 
   async newSession() {
@@ -67,21 +97,16 @@ class Chat {
     await this.memento.update(SESSION_KEY, this.sessionId);
     await this.memento.update(SESSION_DIR_KEY, normalizeDir(this.server.dir));
     this.log(`[chat] session ${this.sessionId}`);
-    // A freshly spawned server defaults to whichever provider it considers
-    // primary, which may not be authenticated; pin the configured model.
-    if (this.defaultModelRef) {
-      try {
-        await this.setModel(this.defaultModelRef);
-        this.log(`[chat] model ${this.defaultModelRef.providerID}/${this.defaultModelRef.id}`);
-      } catch (err) {
-        this.log(`[chat] setModel failed: ${err.message}`);
-      }
-    }
+    // A fresh session has no model, and the server would answer it with its own
+    // default — which may be an unauthenticated or free provider.
+    await this.pinModel(this.sessionId, session);
     // Carry the composer's agent choice over; the server would otherwise reset
     // every new session to its own default ("build").
     if (this.defaultAgent) {
       try {
-        await this.setAgent(this.defaultAgent);
+        await this.server.request('POST', `/api/session/${this.sessionId}/agent`, {
+          body: { agent: this.defaultAgent }
+        });
         this.log(`[chat] agent ${this.defaultAgent}`);
       } catch (err) {
         this.log(`[chat] setAgent failed: ${err.message}`);
@@ -176,7 +201,7 @@ class Chat {
     return {
       transcript: toTranscript(raw),
       agents: agentsFromMessages(raw),
-      selection: selectionFrom(session)
+      selection: selectionFrom(session, raw)
     };
   }
 
@@ -230,13 +255,15 @@ class Chat {
     let session = null;
     try {
       session = await this.getSession(id);
+      // So the composer's model is true of the session, not just of the panel.
+      if (await this.pinModel(id, session)) session = await this.getSession(id);
     } catch (err) {
       this.log(`[chat] could not read the session's agent/model: ${err.message}`);
     }
     return {
       transcript: toTranscript(raw),
       agents: agentsFromMessages(raw),
-      selection: selectionFrom(session)
+      selection: selectionFrom(session, raw)
     };
   }
 
@@ -314,24 +341,55 @@ function toTranscript(rows) {
 
 /**
  * What the composer's agent/model/variant pickers should show for a session.
- * A session with no model set reports neither field, and one set without a
- * variant comes back as the literal "default" — both mean "Default" in the UI.
+ *
+ * `session.model` is what the session will use for its next turn, so it wins.
+ * A session can lack one — made by another client, or before anything was
+ * chosen — and the picker would otherwise fall back to the configured model
+ * rather than the one the session actually ran on. A session set without a
+ * variant reports the literal "default".
+ *
+ * @param {any} session the session record
+ * @param {any[]} [rows] its messages, newest or oldest first
  * @returns {{agent:string|null, model:{id:string,providerID:string,variant:string|null}|null}}
  */
-function selectionFrom(session) {
+function selectionFrom(session, rows) {
   const s = session || {};
   const m = s.model;
   return {
     agent: s.agent || null,
     model:
       m && m.id
-        ? {
-            id: m.id,
-            providerID: m.providerID,
-            variant: m.variant && m.variant !== 'default' ? m.variant : null
-          }
-        : null
+        ? { id: m.id, providerID: m.providerID, variant: variantOf(m) }
+        : lastUsedModel(rows)
   };
+}
+
+/**
+ * The variant a model reference was set with. The server writes the literal
+ * "default" when there is none, and omits the field entirely on a fresh
+ * session; both mean "Default" in the picker.
+ * @returns {string|null}
+ */
+function variantOf(model) {
+  const v = model && model.variant;
+  return v && v !== 'default' ? v : null;
+}
+
+/**
+ * The model, and variant, that answered a session's most recent turn —
+ * assistant messages record both. Compared by timestamp rather than position:
+ * the message list's ordering is not guaranteed.
+ * @returns {{id:string,providerID:string,variant:string|null}|null}
+ */
+function lastUsedModel(rows) {
+  let best = null;
+  for (const m of rows || []) {
+    if (!m || m.type !== 'assistant' || !m.model || !m.model.id) continue;
+    const at = (m.time && m.time.created) || 0;
+    if (!best || at >= best.at) best = { at, model: m.model };
+  }
+  if (!best) return null;
+  return { id: best.model.id, providerID: best.model.providerID, variant: variantOf(best.model) };
 }
 
 /**
