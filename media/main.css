@@ -524,6 +524,17 @@ body {
   margin-bottom: 2px;
 }
 
+/* On a timeline row the stamp is lifted out of the flow, as Claude Code does.
+   Left in flow it would push the content down and the dot — which is placed
+   against the first line — would end up level with the clock instead. */
+.msg.tl > .stamp,
+.msg.tl .body > .stamp {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  margin-bottom: 0;
+}
+
 /* ---- rendered markdown ---- */
 
 .prose {
@@ -630,8 +641,10 @@ body {
 /* A one-line summary, and behind it the labelled body: the arguments, the
    result and any exit code — the shape Claude Code gives a tool call. */
 
+/* Bottom margin only: a top margin on the first block of a row would collapse
+   out of the body and shift the content away from its dot. */
 .tool {
-  margin: 8px 0;
+  margin: 0 0 8px;
 }
 
 .tool-line {

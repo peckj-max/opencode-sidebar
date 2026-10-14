@@ -473,6 +473,7 @@ function onEvent(ev) {
       reasoningStarted.set(reasoningKey(data), started);
       provider.post({
         type: 'reasoning-start',
+        hidden: isSystemReply(data),
         messageID: data.assistantMessageID || data.messageID || 'assistant',
         partID: reasoningPartId(data),
         at: started
@@ -482,6 +483,7 @@ function onEvent(ev) {
     case 'session.reasoning.delta':
       provider.post({
         type: 'reasoning-delta',
+        hidden: isSystemReply(data),
         messageID: data.assistantMessageID || data.messageID || 'assistant',
         partID: reasoningPartId(data),
         text: data.delta || ''
@@ -490,6 +492,7 @@ function onEvent(ev) {
     case 'session.reasoning.ended':
       provider.post({
         type: 'reasoning-end',
+        hidden: isSystemReply(data),
         messageID: data.assistantMessageID || data.messageID || 'assistant',
         partID: reasoningPartId(data),
         text: data.text || '',
@@ -499,6 +502,7 @@ function onEvent(ev) {
     case 'session.text.delta':
       provider.post({
         type: 'delta',
+        hidden: isSystemReply(data),
         messageID: data.assistantMessageID || data.messageID || 'assistant',
         partID: String(data.ordinal === undefined ? 'text' : data.ordinal),
         text: data.delta || '',
@@ -508,6 +512,7 @@ function onEvent(ev) {
     case 'session.text.ended':
       provider.post({
         type: 'part',
+        hidden: isSystemReply(data),
         messageID: data.assistantMessageID || data.messageID || 'assistant',
         partID: String(data.ordinal === undefined ? 'text' : data.ordinal),
         text: data.text || ''
@@ -520,6 +525,10 @@ function onEvent(ev) {
       break;
     case 'session.execution.succeeded':
     case 'session.idle':
+      // A reminder that was never answered must not keep the next real answer
+      // hidden, so the pending flag dies with the turn.
+      pendingSystemReply = false;
+      systemReplies.clear();
       endTurn();
       break;
     case 'session.execution.failed':
@@ -556,6 +565,13 @@ function onEvent(ev) {
       break;
     case 'session.created':
       noteChildSession(data);
+      break;
+    case 'session.inbox.enqueued':
+      // A system reminder (the plan-mode preamble is one) is queued as a
+      // `synthetic` item; the model's next message answers it, not the user.
+      if (data.item && (data.item.type === 'synthetic' || data.item.type === 'system')) {
+        pendingSystemReply = true;
+      }
       break;
     case 'session.tool.input.started':
       // Remember call id -> tool name so a permission request can name its tool.
@@ -651,6 +667,26 @@ function toolId(data) {
   return data.toolCallID || data.toolCallId || data.callID || data.callId || data.id || '';
 }
 
+/**
+ * Was this event part of the model's answer to a system reminder? The server
+ * injects those as `synthetic` inbox items — the plan-mode preamble is one — and
+ * the reply is not part of the conversation the user had. It is hidden rather
+ * than ordered because it cannot be placed reliably: its message is created
+ * before the user's first prompt but may finish streaming after it, so it lands
+ * on whichever side of that prompt the timing happens to give.
+ */
+function isSystemReply(data) {
+  const id = data.assistantMessageID || data.messageID;
+  if (!id) return false;
+  if (systemReplies.has(id)) return true;
+  if (!pendingSystemReply) return false;
+  // The first message to start after a system reminder is its reply.
+  pendingSystemReply = false;
+  systemReplies.add(id);
+  log(`[ext] hiding the model's reply to a system reminder (${id})`);
+  return true;
+}
+
 /** The exit code a tool reported, when it ran a process. */
 function toolExit(data) {
   const meta = data && data.metadata;
@@ -711,6 +747,10 @@ const subagents = new Map(); // tool call id -> {id, agent, description, childSe
 const toolNames = new Map(); // tool call id -> tool name (permission requests carry only the id)
 /** Reasoning block ("messageID:ordinal") -> its start time, for "Thought for Ns". */
 const reasoningStarted = new Map();
+/** A system reminder is waiting for its reply — the next message is that reply. */
+let pendingSystemReply = false;
+/** Messages that answered a system reminder, which the panel does not show. */
+const systemReplies = new Set();
 let mainAgent = null;
 let agentDescriptions = {};
 

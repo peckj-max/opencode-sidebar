@@ -312,8 +312,20 @@ class Chat {
  */
 function toTranscript(rows) {
   const out = [];
-  for (const m of rows || []) {
-    if (!m || m.type === 'idle') continue;
+  const all = rows || [];
+  for (let i = 0; i < all.length; i++) {
+    const m = all[i];
+    if (!m) continue;
+    // Only real turns. A stored session also holds bookkeeping the live view
+    // never shows — `synthetic` (a plan-mode or system-reminder preamble),
+    // `agent-switched`, `model-switched`, `idle` — and rendering those on
+    // restore is what made a reloaded session look unlike the live one.
+    if (m.type !== 'user' && m.type !== 'assistant') continue;
+    // A reply to a system reminder is not part of the conversation. It is
+    // hidden live too (see the synthetic case in extension.js): the reminder is
+    // injected before the user's first prompt, so its reply lands on the wrong
+    // side of that prompt depending on how late it streams.
+    if (m.type === 'assistant' && isSystemReplyRow(all, i)) continue;
     // Assistant messages carry a content[] array of parts; user messages put
     // their text at the top level instead, so both shapes must be read.
     const parts = Array.isArray(m.content) ? m.content : Array.isArray(m.parts) ? m.parts : [];
@@ -379,6 +391,16 @@ function summarizeTool(name, input) {
     default:
       return clip(first('description', 'query', 'pattern', 'filePath', 'path', 'command', 'url', 'name', 'prompt'));
   }
+}
+
+/**
+ * Was this message the model's answer to a system reminder rather than to the
+ * user? Rows arrive newest-first, so the message before it in time is the next
+ * entry along.
+ */
+function isSystemReplyRow(rows, i) {
+  const earlier = rows[i + 1];
+  return !!earlier && (earlier.type === 'synthetic' || earlier.type === 'system');
 }
 
 /**

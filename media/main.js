@@ -76,7 +76,7 @@
   const responseStarts = new Map(); // assistantMessageID -> start time
   let pendingPermission = null; // { el, requestId } while an approval is unanswered
   let agentState = { main: null, items: [], running: false };
-  let currentTurn = null; // the .turn wrapper new content lands in
+  const orderedBlocks = []; // { el, at, turn } — turns and day dividers, in order
   const turns = new Map(); // assistantMessageID -> { el, body, parts, tools, actions }
   const toolRows = new Map(); // tool call id -> its row, so a result finds its call
   const pendingRender = new Set();
@@ -221,8 +221,11 @@
     el.appendChild(document.createElement('span')).className = 'wave';
     el.appendChild(label);
     el.appendChild(document.createElement('span')).className = 'wave';
-    messagesEl.appendChild(el);
-    if (thinking) messagesEl.appendChild(thinking.el);
+    // Placed at the start of its day, so it heads every row of that day rather
+    // than landing in the middle of them when something arrives out of order.
+    const day = new Date(at || Date.now());
+    day.setHours(0, 0, 0, 0);
+    insertOrdered(el, day.getTime(), false);
   }
 
   /** The right-aligned time stamp, as Claude Code's `.line > .stamp`. */
@@ -233,21 +236,51 @@
     return el;
   }
 
+  // Turn wrappers, each tagged with the moment it belongs to and held in
+  // chronological order. Placement is by that moment rather than by when the
+  // events happened to arrive: a plan-mode preamble is answered before the first
+  // prompt but can stream in after it, and ordering by arrival put the reply
+  // above the thing it was replying to.
+
+  function makeTurn() {
+    const el = document.createElement('div');
+    el.className = 'turn';
+    return el;
+  }
+
   /**
-   * The turn new content belongs to: the prompt and everything it produces, in
-   * one wrapper. That wrapper is what bounds the prompt's stickiness — it pins
-   * to the top while its own turn is on screen and the next turn pushes it off,
-   * which is how Claude Code does it.
+   * Place an element in the content area by the moment it belongs to, so turns
+   * and day dividers stay in order however late their events arrive. Ties keep
+   * insertion order, which is what puts a day's divider above its first row.
    */
-  function turnContainer() {
-    if (!currentTurn) {
-      currentTurn = document.createElement('div');
-      currentTurn.className = 'turn';
-      messagesEl.appendChild(currentTurn);
+  function insertOrdered(el, at, isTurn) {
+    const entry = { el, at, turn: !!isTurn };
+    const i = orderedBlocks.findIndex((b) => b.at > at);
+    if (i < 0) {
+      orderedBlocks.push(entry);
+      messagesEl.appendChild(el);
+    } else {
+      orderedBlocks.splice(i, 0, entry);
+      const next = orderedBlocks[i + 1];
+      messagesEl.insertBefore(el, next ? next.el : null);
     }
-    // Keep the spinner pinned to the bottom as new rows stream in.
+    // The spinner always sits last, below everything else.
     if (thinking) messagesEl.appendChild(thinking.el);
-    return currentTurn;
+    return el;
+  }
+
+  /**
+   * The turn a moment belongs to: the newest turn at or before it. Anything
+   * earlier than every turn gets one of its own, placed ahead of them — which
+   * is where a plan-mode preamble belongs when it streams in late.
+   */
+  function turnContainer(at) {
+    const t = at || Date.now();
+    let host = null;
+    for (const b of orderedBlocks) if (b.turn && b.at <= t) host = b;
+    if (!host) return insertOrdered(makeTurn(), t, true);
+    if (thinking) messagesEl.appendChild(thinking.el);
+    return host.el;
   }
 
   /**
@@ -258,13 +291,14 @@
    * @param {string} dot '' | 'dot-success' | 'dot-failure' | 'dot-warning' | 'dot-progress'
    */
   function addRow(dot, at) {
-    ensureDateSeparator(at || Date.now());
+    const when = at || Date.now();
+    ensureDateSeparator(when);
     const el = document.createElement('div');
     el.className = 'msg tl' + (dot ? ' ' + dot : '');
     const body = document.createElement('div');
     body.className = 'body';
     el.appendChild(body);
-    turnContainer().appendChild(el);
+    turnContainer(when).appendChild(el);
     if (thinking) messagesEl.appendChild(thinking.el);
     return { el, body };
   }
@@ -277,20 +311,38 @@
 
   // --------------------------------------------------------- the assistant turn
   //
-  // One row per assistant message, holding its blocks in the order the model
-  // produced them: reasoning disclosures, tool calls, the prose, then the
-  // copy/bookmark actions. That is Claude Code's shape — a single dot beside a
-  // stack of blocks — rather than one row per block.
+  // One assistant message produces several blocks — a "Thought for 12s", some
+  // tool calls, the answer — and each gets its own row and its own dot, in the
+  // order the model produced them. Claude Code does the same for the rows it
+  // breaks out (its tool-result and fold rows each carry a dot).
+
+  /**
+   * A row belonging to the current message. Only the first carries the
+   * timestamp, so a message split across several rows still reads as one moment.
+   */
+  function messageRow(rec, dot) {
+    const { el, body } = addRow(dot, rec.at);
+    el.dataset.messageId = rec.id;
+    if (!rec.stamped) {
+      body.appendChild(timeLine(rec.at));
+      rec.stamped = true;
+    }
+    const row = { el, body, text: '' };
+    rec.rows.push(row);
+    return row;
+  }
 
   function ensureTurn(messageID, at) {
     const key = messageID || 'assistant';
     if (turns.has(key)) return turns.get(key);
-    const when = at || responseStarts.get(key) || Date.now();
+    // A new assistant message means the previous one is done, so its rows settle
+    // now rather than blinking on until the whole turn ends.
+    settleAllRows();
+    // Prefer the step's own start over the first delta's time: a message that
+    // streams in late still belongs where it began, not where it arrived.
+    const when = responseStarts.get(key) || at || Date.now();
     responseStarts.delete(key);
-    const { el, body } = addRow('dot-progress', when);
-    el.dataset.messageId = key;
-    body.appendChild(timeLine(when));
-    const rec = { id: key, el, body, parts: new Map(), tools: new Map(), actions: null };
+    const rec = { id: key, at: when, stamped: false, rows: [], parts: new Map(), tools: new Map(), actions: null };
     turns.set(key, rec);
     return rec;
   }
@@ -299,10 +351,11 @@
   function textPart(rec, partID) {
     const key = 't' + partID;
     if (rec.parts.has(key)) return rec.parts.get(key);
+    const row = messageRow(rec, 'dot-progress');
     const el = document.createElement('div');
     el.className = 'prose';
-    rec.body.appendChild(el);
-    const part = { kind: 'text', el, text: '' };
+    row.body.appendChild(el);
+    const part = { kind: 'text', row, el, text: '' };
     rec.parts.set(key, part);
     return part;
   }
@@ -315,6 +368,7 @@
   function reasoningPart(rec, partID) {
     const key = String(partID);
     if (rec.parts.has(key)) return rec.parts.get(key);
+    const row = messageRow(rec, 'dot-progress');
     const el = document.createElement('details');
     el.className = 'thinking';
     const summary = document.createElement('summary');
@@ -330,8 +384,8 @@
     content.className = 'thinking-content';
     el.appendChild(summary);
     el.appendChild(content);
-    rec.body.appendChild(el);
-    const part = { kind: 'reasoning', el, label, content, text: '' };
+    row.body.appendChild(el);
+    const part = { kind: 'reasoning', row, el, label, content, text: '' };
     rec.parts.set(key, part);
     return part;
   }
@@ -340,6 +394,8 @@
   function finishReasoning(part, ms) {
     const known = typeof ms === 'number' && isFinite(ms) && ms >= 0;
     part.label.textContent = known ? 'Thought for ' + Math.round(ms / 1000) + 's' : 'Thinking';
+    // The thought is over, so its dot stops working and goes back to grey.
+    settleRow(part.row);
   }
 
   function renderReasoning(part) {
@@ -383,7 +439,9 @@
       '<button class="act" data-act="bookmark" title="Bookmark response" aria-label="Bookmark response">' +
       ICON_BOOKMARK +
       '</button>';
-    rec.body.appendChild(row);
+    // Under the last row of the message — the answer the actions apply to.
+    const last = rec.rows[rec.rows.length - 1];
+    if (last) last.body.appendChild(row);
     rec.actions = row;
     applyBookmark(rec);
   }
@@ -404,9 +462,7 @@
     ensureDateSeparator(when);
     // A prompt opens its own turn: everything the model does in response lands
     // in the same wrapper, which is what the prompt sticks within.
-    currentTurn = document.createElement('div');
-    currentTurn.className = 'turn';
-    messagesEl.appendChild(currentTurn);
+    const wrapEl = insertOrdered(makeTurn(), when, true);
     const el = document.createElement('div');
     el.className = 'msg user';
     el.appendChild(timeLine(when));
@@ -420,7 +476,7 @@
       f.textContent = files.map((x) => x.name || x.uri).join(', ');
       el.appendChild(f);
     }
-    currentTurn.appendChild(el);
+    wrapEl.appendChild(el);
     if (thinking) messagesEl.appendChild(thinking.el);
     scrollToBottom(true);
   }
@@ -444,6 +500,7 @@
   function ensureTool(rec, id, name, detail) {
     const key = id || name + ':' + rec.tools.size;
     if (rec.tools.has(key)) return rec.tools.get(key);
+    const row = messageRow(rec, 'dot-progress');
     const el = document.createElement('div');
     el.className = 'tool running';
     const line = document.createElement('div');
@@ -457,11 +514,11 @@
     line.appendChild(n);
     line.appendChild(d);
     el.appendChild(line);
-    rec.body.appendChild(el);
-    const row = { el, detailEl: d, name: name || 'tool', input: null, result: '', exit: null, bodyEl: null };
-    rec.tools.set(key, row);
-    if (id) toolRows.set(String(id), row);
-    return row;
+    row.body.appendChild(el);
+    const tool = { row, el, detailEl: d, name: name || 'tool', input: null, result: '', exit: null, bodyEl: null };
+    rec.tools.set(key, tool);
+    if (id) toolRows.set(String(id), tool);
+    return tool;
   }
 
   /** Build the expandable body, once there is something to put in it. */
@@ -524,26 +581,26 @@
     const rec = ensureTurn(msg.messageID, msg.at);
     // A result can arrive with no call to match — the call event was missed, or
     // the stream reconnected mid-tool — so fall back to making the row.
-    const row = msg.state === 'running'
+    const tool = msg.state === 'running'
       ? ensureTool(rec, msg.id, msg.name, msg.detail)
       : findTool(rec, msg) || ensureTool(rec, msg.id, msg.name, msg.detail);
 
     if (msg.state === 'running') {
-      if (msg.input) row.input = msg.input;
-      renderToolBody(row);
-      setDot(rec.el, 'dot-progress');
+      if (msg.input) tool.input = msg.input;
+      renderToolBody(tool);
     } else {
       const ok = msg.state === 'ok';
-      row.el.classList.remove('running', 'ok', 'error');
-      row.el.classList.add(ok ? 'ok' : 'error');
-      if (msg.input) row.input = msg.input;
-      if (msg.result) row.result = msg.result;
-      if (typeof msg.exit === 'number') row.exit = msg.exit;
-      if (!ok && msg.error) row.detailEl.textContent = msg.error;
-      renderToolBody(row);
-      // The turn's dot is not touched here: a tool failing is ordinary — a grep
-      // that matches nothing, a test that fails — and the row itself already
-      // turns red. Only the turn's own outcome settles the dot, at turn-end.
+      tool.el.classList.remove('running', 'ok', 'error');
+      tool.el.classList.add(ok ? 'ok' : 'error');
+      if (msg.input) tool.input = msg.input;
+      if (msg.result) tool.result = msg.result;
+      if (typeof msg.exit === 'number') tool.exit = msg.exit;
+      if (!ok && msg.error) tool.detailEl.textContent = msg.error;
+      renderToolBody(tool);
+      // Green once the call has run, red if it failed — Claude Code colours a
+      // tool result the same way (is_error ? failure : success). A failing tool
+      // is ordinary, so it colours its own row and not the turn.
+      setDot(tool.row.el, ok ? 'dot-success' : 'dot-failure');
     }
     scrollToBottom(false);
   }
@@ -552,7 +609,7 @@
     messagesEl.innerHTML = '';
     turns.clear();
     toolRows.clear();
-    currentTurn = null;
+    orderedBlocks.length = 0;
     thinking = null;
     pendingPermission = null;
     lastDateKey = null;
@@ -631,6 +688,42 @@
     return ids.length ? turns.get(ids[ids.length - 1]) : null;
   }
 
+  /**
+   * Stop a row's dot working, for rows whose outcome is neither green nor red: a
+   * finished thought, or the answer itself. Tool rows settle themselves — green
+   * once the call has run, red if it failed.
+   */
+  function settleRow(row) {
+    if (!row.el.classList.contains('dot-progress')) return;
+    setDot(row.el, '');
+  }
+
+  /**
+   * Settle anything still working, across every message in the turn. A message
+   * produces several rows, and settling only the newest left the earlier ones
+   * blinking after the turn had finished.
+   */
+  function settleAllRows() {
+    for (const rec of turns.values()) for (const row of rec.rows) settleRow(row);
+  }
+
+  /**
+   * The last message with prose in each turn wrapper, which is where the
+   * response actions belong. `turns` holds insertion order, so a later message
+   * overwrites an earlier one against the same wrapper.
+   * @returns {Array<{rec: any, text: string}>}
+   */
+  function lastTextPerTurn() {
+    const byTurn = new Map();
+    for (const rec of turns.values()) {
+      if (!rec.rows.length) continue;
+      const text = turnText(rec);
+      if (!text.trim()) continue;
+      byTurn.set(rec.rows[0].el.parentNode, { rec, text });
+    }
+    return [...byTurn.values()];
+  }
+
   /** The prose of a turn, which is what Copy and Bookmark act on. */
   function turnText(rec) {
     let out = '';
@@ -666,13 +759,14 @@
         finishReasoning(part, b.ms);
         renderReasoning(part);
       } else if (b.kind === 'tool') {
-        const row = ensureTool(rec, b.id, b.name, b.detail);
-        row.input = b.input;
-        row.result = b.result;
-        row.exit = b.exit;
-        row.el.classList.remove('running');
-        row.el.classList.add(b.status === 'failed' ? 'error' : 'ok');
-        renderToolBody(row);
+        const tool = ensureTool(rec, b.id, b.name, b.detail);
+        tool.input = b.input;
+        tool.result = b.result;
+        tool.exit = b.exit;
+        tool.el.classList.remove('running');
+        tool.el.classList.add(b.status === 'failed' ? 'error' : 'ok');
+        renderToolBody(tool);
+        setDot(tool.row.el, b.status === 'failed' ? 'dot-failure' : 'dot-success');
       }
     }
   }
@@ -682,9 +776,8 @@
     if (rec) {
       const text = turnText(rec);
       if (text.trim()) ensureActions(rec, text);
-      // The turn's own outcome settles the dot: green, or red if it failed.
-      if (!rec.el.classList.contains('dot-failure')) setDot(rec.el, 'dot-success');
     }
+    settleAllRows();
     setBusy(false);
   }
 
@@ -1441,6 +1534,7 @@
         if (msg.messageID) responseStarts.set(msg.messageID, msg.at || Date.now());
         break;
       case 'delta': {
+        if (msg.hidden) break;
         hideThinking();
         const rec = ensureTurn(msg.messageID, msg.at);
         const part = textPart(rec, msg.partID);
@@ -1449,12 +1543,14 @@
         break;
       }
       case 'part': {
+        if (msg.hidden) break;
         const rec = ensureTurn(msg.messageID, msg.at);
         textPart(rec, msg.partID).text = msg.text;
         scheduleRender(rec);
         break;
       }
       case 'reasoning-start':
+        if (msg.hidden) break;
         // The disclosure opens as soon as the model starts thinking, so it is
         // visible while it streams rather than only once it lands.
         hideThinking();
@@ -1462,6 +1558,7 @@
         scrollToBottom(false);
         break;
       case 'reasoning-delta': {
+        if (msg.hidden) break;
         const rec = ensureTurn(msg.messageID, msg.at);
         const part = reasoningPart(rec, msg.partID);
         part.text += msg.text;
@@ -1469,6 +1566,7 @@
         break;
       }
       case 'reasoning-end': {
+        if (msg.hidden) break;
         const rec = ensureTurn(msg.messageID, msg.at);
         const part = reasoningPart(rec, msg.partID);
         if (msg.text) part.text = msg.text;
@@ -1488,13 +1586,15 @@
           } else {
             const rec = ensureTurn(m.id, m.at);
             renderBlocks(rec, m);
-            // A restored turn is finished by definition — it should not blink
-            // as though it were still working.
-            setDot(rec.el, 'dot-success');
-            const text = turnText(rec);
-            if (text.trim()) ensureActions(rec, text);
+            // A restored turn is finished by definition, so anything renderBlocks
+            // left working settles here rather than blinking.
+            for (const row of rec.rows) settleRow(row);
           }
         }
+        // One set of actions per turn, under its last message that has prose —
+        // where the live path puts them too. Adding them per message put copy
+        // and bookmark buttons under every paragraph.
+        for (const { rec, text } of lastTextPerTurn()) ensureActions(rec, text);
         // Land on the newest turn. Scrolling twice covers late layout shifts
         // (markdown, wrapped code blocks) that change the final height.
         scrollToBottom(true);

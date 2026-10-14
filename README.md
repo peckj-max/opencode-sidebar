@@ -13,12 +13,23 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   (`Ctrl+Shift+L` is deliberately avoided — it is VS Code's *Select All Occurrences of Find Match*.)
 - **Open referenced files** — click a `path:line` the assistant mentions to open it in the editor.
 - **A transcript that shows the work** — the content area follows the Claude Code extension's
-  rendering. Each assistant turn is one row on the timeline carrying its blocks in order: a
-  collapsed **Thinking** disclosure that reads "Thought for 12s" and holds the model's reasoning,
-  the **tool calls** with an expandable body of labelled rows (arguments, result, exit code), the
-  prose, and the copy/bookmark actions. The dot beside a row takes one neutral colour, with green,
-  red and amber reserved for status. Your own prompt is a bordered bubble and deliberately *not* a
-  timeline row, exactly as Claude Code treats it. A day divider is drawn as a wave | label | wave.
+  rendering. Every block of an assistant message gets its own row and its own dot, in the order the
+  model produced them: a collapsed **Thinking** disclosure that reads "Thought for 12s" and holds
+  the model's reasoning, each **tool call** with an expandable body of labelled rows (arguments,
+  result, exit code), then the prose, with the copy/bookmark actions under the last of them. Only
+  the first row of a message carries the timestamp, so a message split across several rows still
+  reads as one moment. Dots follow Claude Code's rule — colour is status, grey is the resting
+  state — so a **completed tool call is green**, a failed one red, a warning amber, and anything
+  still working blinks. A finished thought and the answer itself settle back to grey, and every
+  row settles on its own rather than waiting for the turn to end. Your own prompt is a bordered
+  bubble and deliberately *not* a timeline row, exactly as Claude Code treats it. A day divider is
+  drawn as a wave | label | wave.
+
+  A reply to a system reminder — the plan-mode preamble is the usual one — is **not shown**. The
+  server injects those as `synthetic` inbox items, and the reply's message is created before your
+  first prompt while its streaming can finish after it, so it lands on whichever side of that
+  prompt the timing happens to give. Both the live and restored views hide it rather than order it
+  inconsistently.
   Reasoning and tool output survive a restore — `toTranscript` keeps them rather than discarding
   everything but the prose.
 - **The prompt sticks while you read its answer** — each prompt and everything it produced sit in
