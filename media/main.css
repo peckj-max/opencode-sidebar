@@ -828,6 +828,142 @@ body {
   font-style: italic;
 }
 
+/* ---- questions ---- */
+/* A question is answered by clicking a row, not by opening a dropdown: the
+   choice is visible at rest, and the picked one is marked twice — a filled
+   radio or a tick, and a bar down its left edge. Claude Code's shape. */
+
+.question-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.question-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question-header-label {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.question-text {
+  color: var(--vscode-foreground);
+  font-size: 0.95em;
+  font-weight: 500;
+}
+
+.options-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.option {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.option:hover,
+.option:focus-visible {
+  outline: none;
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* The picked option: a bar down its left edge, as Claude Code marks it. */
+.option.selected {
+  box-shadow: inset 2px 0 0 0 var(--vscode-button-background);
+}
+
+.option-mark {
+  flex-shrink: 0;
+  align-self: center;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--oc-input-border);
+  background: transparent;
+}
+
+.option-mark.radio {
+  border-radius: 50%;
+}
+
+.option-mark.checkbox {
+  border-radius: 3px;
+}
+
+.option-mark.on {
+  border-color: var(--vscode-button-background);
+}
+
+/* A tick fills its box; a radio shows a dot in its ring. */
+.option-mark.checkbox.on {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.option-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vscode-button-background);
+}
+
+.option-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.option-label {
+  color: var(--vscode-foreground);
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+.option-description {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.other-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--oc-input-border);
+  border-radius: 4px;
+  outline: none;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  font-family: inherit;
+  font-size: 0.9em;
+}
+
+.other-input:focus-within {
+  border-color: var(--oc-focus-ring);
+}
+
 .card-field {
   display: flex;
   flex-direction: column;
@@ -1274,6 +1410,59 @@ textarea#input::placeholder {
 .agents-dot.running {
   background: var(--oc-dot-assistant);
   animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ---- autopilot ---- */
+/* Not a picker: it opens no menu, it flips a setting. On, it is deliberately
+   loud — an amber chip, because what it approves is exactly the thing worth
+   noticing while it is happening. */
+
+.ap-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* It shares the bar with the pickers, so it shrinks and ellipsises rather
+     than pushing the send button off the end on a narrow sidebar. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 34%;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-size: 11px;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.ap-btn svg {
+  flex: 0 0 auto;
+}
+
+.ap-btn:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.18));
+  border-color: var(--vscode-panel-border);
+}
+
+.ap-btn .ap-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ap-btn.on {
+  opacity: 1;
+  color: var(--oc-dot-warning);
+  border-color: color-mix(in srgb, var(--oc-dot-warning) 55%, transparent);
+  background: color-mix(in srgb, var(--oc-dot-warning) 16%, transparent);
+}
+
+.ap-btn.on:hover {
+  background: color-mix(in srgb, var(--oc-dot-warning) 26%, transparent);
 }
 
 .agents-panel {

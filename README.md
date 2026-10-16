@@ -25,6 +25,14 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   bubble and deliberately *not* a timeline row, exactly as Claude Code treats it. A day divider is
   drawn as a wave | label | wave.
 
+- **Questions are answered by clicking, not by a dropdown** — when the model asks something, each
+  option is its own row with a radio or checkbox, a bold label and a description, so every choice is
+  visible at once and the picked one is marked both by a filled dot (or a tick) and a bar down its
+  left edge. That is Claude Code's question UI. The answer is submitted in the shape the server
+  reads: a `questions` list is answered positionally — `q0`, `q1`, each holding the picked option
+  labels — while a keyed `fields` form is answered by its own keys. A question with no options gets
+  a text field instead.
+
   A reply to a system reminder — the plan-mode preamble is the usual one — is **not shown**. The
   server injects those as `synthetic` inbox items, and the reply's message is created before your
   first prompt while its streaming can finish after it, so it lands on whichever side of that
@@ -48,6 +56,17 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   the extension's global state, so they apply to every workspace (vs. session pins, which are
   per-workspace).
 
+- **Autopilot** — the toggle in the composer bar, beside the pickers, answers the agent's
+  permission requests for you so a turn is not left sitting on a prompt while you are elsewhere.
+  It replies *once*: approving a request never adds a standing rule to the server's saved
+  permissions, so turning Autopilot off leaves your policy exactly as it was. Every approval still
+  appears in the transcript — a settled, green row naming the action and the resources it covered
+  — so an approval made on your behalf stays on the record rather than being swallowed. If the
+  approval itself fails, the request is handed back as an ordinary answerable card rather than
+  leaving the turn blocked on nothing. Off by default, and it is deliberately loud when on: what
+  asks for permission is access outside the workspace and reads of `.env` files, which is exactly
+  what is worth a look.
+
 ## Requirements
 
 - VS Code 1.106 or newer.
@@ -62,6 +81,46 @@ adopts that server instead of failing, authenticating with the password the desk
 records in its `service.json`. Sessions share the same opencode data directory, so they are
 visible to the desktop app too.
 
+## Installing
+
+There is no build step and no dependencies — the extension is plain CommonJS, the
+webview is vanilla JavaScript — so what is in this folder is what runs. It is
+installed **unpacked**: a plain folder in your VS Code extensions directory.
+
+VS Code derives that folder's name from `publisher` and `version` in `package.json`,
+so this extension lives in `local.opencode-sidebar-0.0.1`. Renaming it will stop it
+loading; bumping the version means installing into the new folder and deleting the
+old one.
+
+1. **Copy the files in.** From the repository root, replacing any previous copy:
+
+   ```powershell
+   $dest = "$env:USERPROFILE\.vscode\extensions\local.opencode-sidebar-0.0.1"
+   Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+   New-Item -ItemType Directory -Path $dest -Force | Out-Null
+   Copy-Item package.json, extension.js, src, media, README.md, .vscodeignore -Recurse $dest
+   ```
+
+2. **Reload VS Code** so it picks the extension up: `Ctrl+Shift+P` →
+   *Developer: Reload Window*. Editing an unpacked extension while VS Code is
+   running has no effect until this is done — the old code keeps running, which
+   looks like a change that "did not work".
+
+3. **Open the panel.** `Ctrl+Shift+P` → *View: Toggle Secondary Side Bar* (`Ctrl+Alt+B`),
+   then choose the **OpenCode** tab. It is in the right-hand bar, next to other
+   secondary-side-bar panels, not the activity bar on the left.
+
+To package it instead of installing unpacked:
+
+```powershell
+npx @vscode/vsce package --allow-missing-repository
+code --install-extension opencode-sidebar-0.0.1.vsix
+```
+
+To uninstall, delete the folder in step 1 and reload. Settings under the
+`opencode.*` keys stay in your `settings.json`, and pinned models stay in the
+extension's global state — those are not removed with the folder.
+
 ## Settings
 
 | Setting | Default | Purpose |
@@ -69,6 +128,9 @@ visible to the desktop app too.
 | `opencode.cliPath` | *(auto)* | Path to `opencode.exe`. |
 | `opencode.model` | `opencode-go/deepseek-v4.1-flash` | Model applied to new sessions, as `providerID/modelID`. |
 | `opencode.autoAttach.enabled` | `true` | Attach the active file/selection to every prompt. |
+| `opencode.freeModels` | `true` | Offer free models (reported at zero cost) in the model list. |
+| `opencode.goPlanOnly` | `false` | Offer only models from the OpenCode Go plan (`opencode-go`). |
+| `opencode.autopilot` | `false` | Approve the agent's permission requests automatically, leaving each approval in the transcript. |
 | `opencode.server.hostname` | `127.0.0.1` | Interface the server binds to and the extension connects to. |
 | `opencode.server.port` | `4096` | Port for the server; `0` picks a free one at random. |
 | `opencode.server.password` | `"654321"` | Password for the server; empty = random per start. |

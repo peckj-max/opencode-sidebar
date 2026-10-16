@@ -18,6 +18,8 @@
   const agentsDot = document.getElementById('agents-dot');
   const agentsLabel = document.getElementById('agents-label');
   const agentsPanel = document.getElementById('agents-panel');
+  const autopilotBtn = document.getElementById('autopilot-btn');
+  const autopilotLabel = document.getElementById('autopilot-label');
   const statusEl = document.getElementById('status');
   const sessionsEl = document.getElementById('sessions');
   const sessionsListEl = document.getElementById('sessions-list');
@@ -37,6 +39,8 @@
     '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4.2 2.6h7.6v10.8L8 10.5l-3.8 2.9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
   const ICON_CHEVRON =
     '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const ICON_CHECK =
+    '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M3.4 8.4l3 3 6.2-6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   /** Shell and search tools colour their output; the escape codes are noise here. */
   function stripAnsi(text) {
@@ -75,6 +79,8 @@
   let lastDateKey = null; // last day divider emitted
   const responseStarts = new Map(); // assistantMessageID -> start time
   let pendingPermission = null; // { el, requestId } while an approval is unanswered
+  // Mirrors the `opencode.autopilot` setting; the host is the source of truth.
+  let autopilot = false;
   let agentState = { main: null, items: [], running: false };
   const orderedBlocks = []; // { el, at, turn } — turns and day dividers, in order
   const turns = new Map(); // assistantMessageID -> { el, body, parts, tools, actions }
@@ -194,12 +200,14 @@
     return d.toLocaleDateString('en-US', opts);
   }
 
-  function atBottom() {
-    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
-  }
-
-  function scrollToBottom(force) {
-    if (force || atBottom()) messagesEl.scrollTop = messagesEl.scrollHeight;
+  /**
+   * Keep the newest content in view. This always jumps to the bottom rather
+   * than only following when the view is already near it: new content is what
+   * you asked to see, and a half-followed scroll left it stranded above the
+   * answer as the reply streamed in.
+   */
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   // ------------------------------------------------------------------- timeline
@@ -419,7 +427,7 @@
         }
       }
       pendingRender.clear();
-      scrollToBottom(false);
+      scrollToBottom();
     });
   }
 
@@ -478,7 +486,7 @@
     }
     wrapEl.appendChild(el);
     if (thinking) messagesEl.appendChild(thinking.el);
-    scrollToBottom(true);
+    scrollToBottom();
   }
 
   function addError(message) {
@@ -488,7 +496,7 @@
     t.className = 'error-message';
     t.textContent = message;
     body.appendChild(t);
-    scrollToBottom(true);
+    scrollToBottom();
   }
 
   // -- tools ----------------------------------------------------------------
@@ -602,7 +610,7 @@
       // is ordinary, so it colours its own row and not the turn.
       setDot(tool.row.el, ok ? 'dot-success' : 'dot-failure');
     }
-    scrollToBottom(false);
+    scrollToBottom();
   }
 
   function clearMessages() {
@@ -648,7 +656,7 @@
       thinkingIndex = (thinkingIndex + 1) % THINKING_WORDS.length;
       text.textContent = THINKING_WORDS[thinkingIndex] + '…';
     }, 2400);
-    scrollToBottom(false);
+    scrollToBottom();
   }
 
   function hideThinking() {
@@ -817,6 +825,28 @@
     chips.push(file);
     renderChips();
   }
+
+  // ----------------------------------------------------------------- autopilot
+  // A toggle rather than a picker: it has no menu to open. What it changes is a
+  // setting, so it reads loudly when on — what asks for permission (access
+  // outside the workspace, reading .env files) is exactly what is worth seeing.
+
+  function renderAutopilot() {
+    autopilotBtn.classList.toggle('on', autopilot);
+    autopilotBtn.setAttribute('aria-pressed', autopilot ? 'true' : 'false');
+    autopilotBtn.title = autopilot
+      ? 'Autopilot is on — permission requests are approved for you'
+      : 'Autopilot: approve permission requests for you';
+    autopilotLabel.textContent = autopilot ? 'Autopilot on' : 'Autopilot';
+  }
+
+  autopilotBtn.addEventListener('click', () => {
+    closePickers(null);
+    closePanels();
+    // The setting is the source of truth, so the button does not flip itself:
+    // the host writes the setting and posts the result back.
+    vscode.postMessage({ type: 'setAutopilot', on: !autopilot });
+  });
 
   // ------------------------------------------------- composer pickers
   // Three of them share one bar: agent, model, and the model's reasoning-effort
@@ -1324,7 +1354,7 @@
     chips = [];
     renderChips();
     setBusy(true);
-    scrollToBottom(true);
+    scrollToBottom();
   }
 
   function setStatus(status, detail) {
@@ -1367,9 +1397,16 @@
     itemEl.classList.add('settled');
   }
 
+  /**
+   * A permission request. `msg.auto` marks one Autopilot has already approved:
+   * it is shown the same way but settled, with no buttons — an approval made on
+   * your behalf stays on the record rather than being silently swallowed.
+   */
   function addPermissionCard(msg) {
+    const auto = msg.auto === true;
     hideThinking();
-    const { el, body } = addRow('dot-warning');
+    // Green is the settled "it happened" colour, amber the one still waiting.
+    const { el, body } = addRow(auto ? 'dot-success' : 'dot-warning');
     const c = card(body);
     const title = document.createElement('div');
     title.className = 'card-title';
@@ -1378,8 +1415,21 @@
     cardLines(c, [
       msg.resources && msg.resources.length ? msg.resources.join('\n') : '',
       msg.tool ? 'tool: ' + msg.tool : '',
-      msg.save && msg.save.length ? '"Always allow" will remember: ' + msg.save.join(', ') : ''
+      // Autopilot answers `once`, so nothing is being remembered on its behalf.
+      !auto && msg.save && msg.save.length
+        ? '"Always allow" will remember: ' + msg.save.join(', ')
+        : ''
     ]);
+
+    if (auto) {
+      el.classList.add('settled');
+      const note = document.createElement('div');
+      note.className = 'card-settled';
+      note.textContent = 'Autopilot approved';
+      c.appendChild(note);
+      scrollToBottom();
+      return;
+    }
 
     const row = document.createElement('div');
     row.className = 'card-actions';
@@ -1399,7 +1449,7 @@
 
     el.classList.add('pending');
     pendingPermission = { el, requestId: msg.requestId };
-    scrollToBottom(true);
+    scrollToBottom();
   }
 
   function answerPermission(el, requestId, decision, label) {
@@ -1416,6 +1466,31 @@
     pendingPermission = null;
   }
 
+  /** One selectable option: a radio or checkbox, its label, and its description. */
+  function optionRow(option, multi, onPick) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'option';
+    const mark = document.createElement('span');
+    mark.className = 'option-mark ' + (multi ? 'checkbox' : 'radio');
+    const content = document.createElement('span');
+    content.className = 'option-content';
+    const label = document.createElement('span');
+    label.className = 'option-label';
+    label.textContent = option.label;
+    content.appendChild(label);
+    if (option.description) {
+      const desc = document.createElement('span');
+      desc.className = 'option-description';
+      desc.textContent = option.description;
+      content.appendChild(desc);
+    }
+    row.appendChild(mark);
+    row.appendChild(content);
+    row.addEventListener('click', () => onPick());
+    return { row, mark };
+  }
+
   function addFormCard(form) {
     hideThinking();
     const { el, body } = addRow('dot-warning');
@@ -1427,51 +1502,117 @@
     c.appendChild(title);
     cardLines(c, [form.description || form.message || '']);
 
-    // Fields: an array or a map, each { key|name|id, type, title|label, options }.
-    const raw = form.fields || form.questions || [];
-    const fields = Array.isArray(raw) ? raw : Object.keys(raw).map((k) => ({ key: k, ...(raw[k] || {}) }));
+    // What Submit will send. The server reads a `questions` list positionally —
+    // `answer.q0`, `answer.q1`, each holding the picked option labels — while a
+    // keyed `fields` map is answered by its own keys.
+    const answers = [];
 
-    const inputs = [];
-    for (const f of fields) {
-      const key = f.key || f.name || f.id || 'value';
-      const wrap = document.createElement('label');
-      wrap.className = 'card-field';
-      const lbl = document.createElement('span');
-      lbl.className = 'card-field-label';
-      lbl.textContent = f.title || f.label || key;
-      wrap.appendChild(lbl);
-
-      const type = String(f.type || 'string').toLowerCase();
-      const options = Array.isArray(f.options) ? f.options : [];
-      const optValue = (o) => (o && typeof o === 'object' ? o.value ?? o.id ?? o.label : o);
-      const optLabel = (o) => (o && typeof o === 'object' ? o.label ?? o.title ?? o.value ?? o.id : o);
-
-      if (type === 'multiselect' || type === 'select' || options.length) {
-        const multi = type === 'multiselect';
-        const control = multi || type === 'select' ? document.createElement('select') : document.createElement('div');
-        if (multi) control.multiple = true;
-        const target = control.tagName === 'SELECT' ? control : control;
-        for (const o of options) {
-          const opt = document.createElement('option');
-          opt.value = String(optValue(o));
-          opt.textContent = String(optLabel(o));
-          target.appendChild(opt);
+    const questions = Array.isArray(form.questions) ? form.questions : null;
+    if (questions && questions.length) {
+      questions.forEach((q, index) => {
+        const block = document.createElement('div');
+        block.className = 'question-block';
+        const head = document.createElement('div');
+        head.className = 'question-header';
+        if (q.header) {
+          const h = document.createElement('div');
+          h.className = 'question-header-label';
+          h.textContent = q.header;
+          head.appendChild(h);
         }
-        wrap.appendChild(target);
-        inputs.push({ key, type: multi ? 'multiselect' : 'select', el: target });
-      } else if (type === 'boolean') {
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        wrap.appendChild(cb);
-        inputs.push({ key, type: 'boolean', el: cb });
-      } else {
-        const inp = document.createElement('input');
-        inp.type = 'text';
-        inp.placeholder = f.placeholder || '';
-        wrap.appendChild(inp);
-        inputs.push({ key, type: 'string', el: inp });
+        const text = document.createElement('div');
+        text.className = 'question-text';
+        text.textContent = q.question || q.title || `Question ${index + 1}`;
+        head.appendChild(text);
+        block.appendChild(head);
+
+        const options = (Array.isArray(q.options) ? q.options : []).filter((o) => o && typeof o.label === 'string');
+        const multi = !!(q.multiSelect || q.multiple);
+
+        if (options.length) {
+          const list = document.createElement('div');
+          list.className = 'options-container';
+          const picked = new Set();
+          const marks = [];
+          const paint = () => {
+            for (const m of marks) {
+              const on = picked.has(m.label);
+              m.row.classList.toggle('selected', on);
+              m.mark.classList.toggle('on', on);
+              m.mark.innerHTML = on ? (multi ? ICON_CHECK : '<span class="option-dot"></span>') : '';
+              m.row.setAttribute('aria-pressed', on ? 'true' : 'false');
+            }
+          };
+          for (const o of options) {
+            const made = optionRow(o, multi, () => {
+              if (multi) {
+                if (picked.has(o.label)) picked.delete(o.label);
+                else picked.add(o.label);
+              } else {
+                picked.clear();
+                picked.add(o.label);
+              }
+              paint();
+            });
+            marks.push({ row: made.row, mark: made.mark, label: o.label });
+            list.appendChild(made.row);
+          }
+          block.appendChild(list);
+          paint();
+          answers.push({ key: `q${index}`, read: () => [...picked] });
+        } else {
+          // A question with no options is answered in words.
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'other-input';
+          input.placeholder = q.placeholder || 'Type your answer';
+          block.appendChild(input);
+          answers.push({ key: `q${index}`, read: () => (input.value.trim() ? [input.value.trim()] : []) });
+        }
+        c.appendChild(block);
+      });
+    } else {
+      const raw = form.fields || [];
+      const fields = Array.isArray(raw) ? raw : Object.keys(raw).map((k) => ({ key: k, ...(raw[k] || {}) }));
+      for (const f of fields) {
+        const key = f.key || f.name || f.id || 'value';
+        const wrap = document.createElement('label');
+        wrap.className = 'card-field';
+        const lbl = document.createElement('span');
+        lbl.className = 'card-field-label';
+        lbl.textContent = f.title || f.label || key;
+        wrap.appendChild(lbl);
+
+        const type = String(f.type || 'string').toLowerCase();
+        const opts = Array.isArray(f.options) ? f.options : [];
+        if (type === 'boolean') {
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          wrap.appendChild(cb);
+          answers.push({ key, read: () => !!cb.checked });
+        } else if (opts.length) {
+          const select = document.createElement('select');
+          if (type === 'multiselect') select.multiple = true;
+          for (const o of opts) {
+            const opt = document.createElement('option');
+            opt.value = String(o && typeof o === 'object' ? o.value ?? o.id ?? o.label : o);
+            opt.textContent = String(o && typeof o === 'object' ? o.label ?? o.title ?? o.value ?? o.id : o);
+            select.appendChild(opt);
+          }
+          wrap.appendChild(select);
+          answers.push({
+            key,
+            read: () => (type === 'multiselect' ? Array.from(select.selectedOptions).map((o) => o.value) : select.value)
+          });
+        } else {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.placeholder = f.placeholder || '';
+          wrap.appendChild(input);
+          answers.push({ key, read: () => input.value });
+        }
+        c.appendChild(wrap);
       }
-      c.appendChild(wrap);
     }
 
     const row = document.createElement('div');
@@ -1481,12 +1622,8 @@
     submit.textContent = 'Submit';
     submit.addEventListener('click', () => {
       const answer = {};
-      for (const i of inputs) {
-        if (i.type === 'boolean') answer[i.key] = !!i.el.checked;
-        else if (i.type === 'multiselect') answer[i.key] = Array.from(i.el.selectedOptions).map((o) => o.value);
-        else answer[i.key] = i.el.value;
-      }
-      vscode.postMessage({ type: 'formReply', formId: form.id, answer: answer });
+      for (const a of answers) answer[a.key] = a.read();
+      vscode.postMessage({ type: 'formReply', formId: form.id, answer });
       settleCard(el, 'Answer submitted');
     });
     row.appendChild(submit);
@@ -1503,7 +1640,7 @@
     c.appendChild(row);
     el.dataset.formId = form.id || '';
     el.classList.add('pending');
-    scrollToBottom(true);
+    scrollToBottom();
   }
 
   // --------------------------------------------------------------------- events
@@ -1521,6 +1658,10 @@
         renderChips();
         break;
       }
+      case 'autopilot':
+        autopilot = msg.on === true;
+        renderAutopilot();
+        break;
       case 'stage':
         stage(msg.attachment);
         break;
@@ -1555,7 +1696,7 @@
         // visible while it streams rather than only once it lands.
         hideThinking();
         reasoningPart(ensureTurn(msg.messageID, msg.at), msg.partID);
-        scrollToBottom(false);
+        scrollToBottom();
         break;
       case 'reasoning-delta': {
         if (msg.hidden) break;
@@ -1597,8 +1738,8 @@
         for (const { rec, text } of lastTextPerTurn()) ensureActions(rec, text);
         // Land on the newest turn. Scrolling twice covers late layout shifts
         // (markdown, wrapped code blocks) that change the final height.
-        scrollToBottom(true);
-        requestAnimationFrame(() => scrollToBottom(true));
+        scrollToBottom();
+        requestAnimationFrame(() => scrollToBottom());
         break;
       case 'turn-start':
         // Authoritative: the server began an execution (a queued prompt gets

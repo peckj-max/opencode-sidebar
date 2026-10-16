@@ -33,6 +33,15 @@ function autoAttachEnabled() {
 }
 
 /**
+ * Autopilot answers the agent's permission requests instead of leaving them for
+ * the user. Read from the setting on every request rather than cached, so
+ * flipping it in settings.json takes effect on the next prompt.
+ */
+function autopilotEnabled() {
+  return vscode.workspace.getConfiguration('opencode').get('autopilot') === true;
+}
+
+/**
  * Model applied to new sessions, from the `opencode.model` setting
  * ("providerID/modelID"). A freshly spawned server otherwise defaults to an
  * unauthenticated provider, which fails with provider.auth.
@@ -55,6 +64,24 @@ function currentModelRef() {
 }
 
 /**
+ * A model the server reports at zero cost, in and out. Judged on the reported
+ * price rather than the name: one of the free models here is called "Big
+ * Pickle", and a named "-free" model could in principle start charging.
+ * A model with no cost data at all is not free — unknown is not zero.
+ */
+function isFreeModel(m) {
+  const base = m && Array.isArray(m.cost) ? m.cost[0] : null;
+  return !!base && !base.input && !base.output;
+}
+
+/**
+ * The subscription provider — "OpenCode Go", served from `/inference/go/…` —
+ * as opposed to `opencode`, the default one. The two share model names, so the
+ * provider is the only thing that tells them apart.
+ */
+const GO_PROVIDER = 'opencode-go';
+
+/**
  * The models the webview can choose from, pinned ones first. Variants travel
  * with them: the composer's reasoning-effort picker is built from the selected
  * model's own list, which differs per model ("low/high/max" here,
@@ -62,9 +89,17 @@ function currentModelRef() {
  */
 function modelOptions(list) {
   const pinned = pinnedModelIds();
-  // The server reports models the user disabled in its config as enabled:false;
-  // offering them would let the composer pick something that cannot run.
-  const usable = (list || []).filter((m) => m && m.enabled !== false);
+  const config = vscode.workspace.getConfiguration('opencode');
+  const showFree = config.get('freeModels') !== false;
+  const goOnly = config.get('goPlanOnly') === true;
+  const usable = (list || []).filter((m) => {
+    // The server reports models the user disabled in its config as enabled:false;
+    // offering them would let the composer pick something that cannot run.
+    if (!m || m.enabled === false) return false;
+    if (goOnly && m.providerID !== GO_PROVIDER) return false;
+    if (!showFree && isFreeModel(m)) return false;
+    return true;
+  });
   const options = usable.map((m) => ({
     id: m.id,
     providerID: m.providerID,
@@ -179,6 +214,17 @@ function activate(context) {
     vscode.commands.registerCommand('opencode.openWebUI', openWebUI),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('opencode.model')) chat.defaultModelRef = configuredModelRef();
+      // The toggle writes this setting, and the setting is the source of truth,
+      // so an edit in settings.json moves the toggle too.
+      if (e.affectsConfiguration('opencode.autopilot')) postAutopilot();
+      // What the picker offers changed, so refresh the list in place rather than
+      // waiting for the menu to be reopened.
+      if (
+        (e.affectsConfiguration('opencode.freeModels') || e.affectsConfiguration('opencode.goPlanOnly')) &&
+        server.isRunning
+      ) {
+        postModels().catch((err) => log(`[ext] could not refresh models: ${err.message}`));
+      }
       const endpointChanged =
         e.affectsConfiguration('opencode.server.hostname') ||
         e.affectsConfiguration('opencode.server.port') ||
@@ -221,6 +267,11 @@ function sendContext() {
     context: desc ? toAttachment(desc) : null,
     auto: autoAttachEnabled()
   });
+}
+
+/** Keep the webview's Autopilot toggle showing what the setting actually says. */
+function postAutopilot() {
+  provider.post({ type: 'autopilot', on: autopilotEnabled() });
 }
 
 /** Finish the current turn in the UI and stop waiting for more events. */
@@ -621,18 +672,36 @@ function onEvent(ev) {
       break;
     // The agent waiting on the user. Both of these block the turn until
     // answered, so they must always surface.
-    case 'permission.asked':
+    case 'permission.asked': {
       log(`[ext] permission asked: ${JSON.stringify(data).slice(0, 500)}`);
       // `source.id` is a tool CALL id; resolve it to the tool's name.
-      provider.post({
+      const request = {
         type: 'permission',
         requestId: data.id,
         action: data.action || 'Permission required',
         resources: Array.isArray(data.resources) ? data.resources : [],
         tool: (data.source && toolNames.get(data.source.id)) || '',
         save: Array.isArray(data.save) ? data.save : []
-      });
+      };
+      if (!autopilotEnabled()) {
+        provider.post(request);
+        break;
+      }
+      // Autopilot. Answered with `once`, never `always`: approving this request
+      // must not quietly add a standing rule to the server's saved permissions.
+      // The approval is still posted, so what ran is on the record rather than
+      // silently swallowed.
+      chat.replyPermission(data.id, 'once').then(
+        () => provider.post({ ...request, auto: true }),
+        (err) => {
+          // The turn stays blocked until this is answered, so a failed approval
+          // hands the request back instead of leaving it waiting on nothing.
+          log(`[ext] autopilot could not approve ${data.id}: ${err.message}`);
+          provider.post(request);
+        }
+      );
       break;
+    }
     case 'permission.replied':
       provider.post({ type: 'permission-closed', requestId: data.requestID, reply: data.reply });
       break;
@@ -965,6 +1034,7 @@ async function handleWebviewMessage(msg) {
     switch (msg.type) {
       case 'ready':
         sendContext();
+        postAutopilot();
         await ensureStarted();
         await restoreSession();
         await refreshTitle();
@@ -1022,6 +1092,15 @@ async function handleWebviewMessage(msg) {
         chat.defaultModelRef = ref;
         break;
       }
+      case 'setAutopilot':
+        // Held in settings rather than webview state: a flag that approves
+        // things on your behalf belongs where you can see and audit it.
+        // No reply needed — the config listener posts the new state back, which
+        // is the same path an edit in settings.json takes.
+        await vscode.workspace
+          .getConfiguration('opencode')
+          .update('autopilot', msg.on === true, vscode.ConfigurationTarget.Global);
+        break;
       case 'perm':
         await chat.replyPermission(msg.requestId, msg.decision, msg.message);
         break;
@@ -1338,6 +1417,10 @@ class ChatViewProvider {
       <button id="variant-btn" class="picker-btn" title="Choose the model's reasoning effort">
         <span id="variant-label" class="picker-label">Default</span>
         <svg class="chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="autopilot-btn" class="ap-btn" title="Autopilot: approve permission requests for you" aria-pressed="false">
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M9.5 1.5L4.5 8.5h3l-1 6 5-7h-3z" fill="currentColor"/></svg>
+        <span id="autopilot-label" class="ap-label">Autopilot</span>
       </button>
       <button id="agents-btn" class="agents-btn hidden" title="Agents">
         <span id="agents-dot" class="agents-dot"></span>

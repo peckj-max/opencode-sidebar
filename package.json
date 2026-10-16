@@ -104,6 +104,21 @@
           "default": true,
           "description": "Automatically attach the active editor file (or selection) to each prompt."
         },
+        "opencode.freeModels": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Offer free models — those the server reports at zero cost — in the model list. Turn off to list only models you pay for."
+        },
+        "opencode.goPlanOnly": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Offer only models from the **OpenCode Go** plan (the `opencode-go` provider). The default `opencode` provider shares many model names with it, so this is what separates the two."
+        },
+        "opencode.autopilot": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Autopilot**: answer the agent's permission requests for you, so a turn is not left waiting on a prompt. Each approval is still shown in the transcript. Approves the request once — it never adds a rule to the server's saved permissions. Off by default: what asks for permission (access outside the workspace, reading `.env` files) is exactly what is worth a look."
+        },
         "opencode.server.hostname": {
           "type": "string",
           "default": "127.0.0.1",
