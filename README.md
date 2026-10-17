@@ -44,6 +44,12 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   one turn wrapper, and the prompt is `position: sticky` within it, so it pins to the top of the
   content area while its turn is on screen and the next turn pushes it off. Its background fades
   out over the last 12px so the answer scrolling underneath is not cut off at a hard edge.
+- **It follows the answer only while you are at the bottom** — scroll up to re-read something and
+  the transcript stops chasing the stream, so a reply arriving under your eyes does not drag the
+  view off the line you were reading. Scroll back to the bottom and following resumes. Three things
+  come down regardless, because they are what the turn is waiting on: a prompt you just sent, a
+  permission request, and a question. A permission Autopilot answered is only a transcript row, so
+  it does not move you.
 - **Agent, model and variant pickers** — the composer bar carries three dropdowns: the primary
   agent (`build`, `plan`), the model, and the model's reasoning-effort variant. Variants come
   from the model itself, so the list differs per model (`low`/`high`/`max` on one, `none` … `max`

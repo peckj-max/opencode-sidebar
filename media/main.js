@@ -201,12 +201,38 @@
   }
 
   /**
-   * Keep the newest content in view. This always jumps to the bottom rather
-   * than only following when the view is already near it: new content is what
-   * you asked to see, and a half-followed scroll left it stranded above the
-   * answer as the reply streamed in.
+   * Follow the newest content only while the reader is already at the bottom.
+   * Scrolling up to re-read something is a deliberate act, and dragging the view
+   * back down mid-sentence makes the transcript feel like it is fighting you.
+   *
+   * The flag is maintained from scroll events rather than measured here. Content
+   * is appended *before* scrollToBottom() runs, so at that moment scrollHeight
+   * already includes the new rows and asking "are we at the bottom?" would
+   * always answer no. A scroll event fires before the next update arrives, so
+   * the flag holds the reader's position as of *before* the update — which is
+   * the question that actually matters.
    */
-  function scrollToBottom() {
+  const NEAR_BOTTOM_PX = 16;
+  let stickToBottom = true;
+
+  function atBottom() {
+    return (
+      messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= NEAR_BOTTOM_PX
+    );
+  }
+
+  messagesEl.addEventListener('scroll', () => {
+    stickToBottom = atBottom();
+  });
+
+  /**
+   * Follow the newest content, unless the reader has scrolled away from the
+   * bottom. `force` is for the cases the turn cannot proceed without: an
+   * approval or a question left off-screen would block it with no visible cause.
+   */
+  function scrollToBottom(force) {
+    if (!force && !stickToBottom) return;
+    stickToBottom = true;
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -615,6 +641,9 @@
 
   function clearMessages() {
     messagesEl.innerHTML = '';
+    // A session opens at its newest content, whatever the reader's position was
+    // in the session they just left.
+    stickToBottom = true;
     turns.clear();
     toolRows.clear();
     orderedBlocks.length = 0;
@@ -1354,7 +1383,9 @@
     chips = [];
     renderChips();
     setBusy(true);
-    scrollToBottom();
+    // The reader asked for this turn, so follow it from wherever they had
+    // scrolled to — the reply is what they are waiting on.
+    scrollToBottom(true);
   }
 
   function setStatus(status, detail) {
@@ -1449,7 +1480,8 @@
 
     el.classList.add('pending');
     pendingPermission = { el, requestId: msg.requestId };
-    scrollToBottom();
+    // The turn is blocked until this is answered, so it must be seen.
+    scrollToBottom(true);
   }
 
   function answerPermission(el, requestId, decision, label) {
@@ -1640,7 +1672,8 @@
     c.appendChild(row);
     el.dataset.formId = form.id || '';
     el.classList.add('pending');
-    scrollToBottom();
+    // The turn waits on the answer, so the question must be seen.
+    scrollToBottom(true);
   }
 
   // --------------------------------------------------------------------- events
