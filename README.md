@@ -44,6 +44,14 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   one turn wrapper, and the prompt is `position: sticky` within it, so it pins to the top of the
   content area while its turn is on screen and the next turn pushes it off. Its background fades
   out over the last 12px so the answer scrolling underneath is not cut off at a hard edge.
+- **Prompts from other clients appear as they happen** — the panel is attached to the
+  OpenCode server, not to a chat of its own, so a turn another client runs (the desktop app, a
+  second window, or a prompt sent from Telegram by an extension such as TelegramNotify) is drawn
+  in the transcript while it streams: its prompt as a user bubble, its reasoning, tools and answer
+  as they arrive. Sessions that client creates are added to the history list without reopening it.
+  With no session open yet the panel follows the one that client starts, instead of streaming a
+  turn into a conversation it cannot name.
+
 - **It follows the answer only while you are at the bottom** — scroll up to re-read something and
   the transcript stops chasing the stream, so a reply arriving under your eyes does not drag the
   view off the line you were reading. Scroll back to the bottom and following resumes. Three things
@@ -139,7 +147,7 @@ extension's global state — those are not removed with the folder.
 | `opencode.autopilot` | `false` | Approve the agent's permission requests automatically, leaving each approval in the transcript. |
 | `opencode.server.hostname` | `127.0.0.1` | Interface the server binds to and the extension connects to. |
 | `opencode.server.port` | `4096` | Port for the server; `0` picks a free one at random. |
-| `opencode.server.password` | `"654321"` | Password for the server; empty = random per start. |
+| `opencode.server.password` | `""` | Password for the server; empty = random per start. |
 | `opencode.server.extraArgs` | `[]` | Extra args for `opencode serve`. |
 | `opencode.attach.url` | `""` | Attach to an existing server instead of spawning one. |
 
@@ -151,7 +159,7 @@ desktop app uses:
 {
   "hostname": "127.0.0.1",
   "port": 4096,
-  "password": "654321"
+  "password": "<generated>"
 }
 ```
 
@@ -182,3 +190,9 @@ defaults to a well-known value, so change `opencode.server.password` before doin
 Open the **OpenCode** output channel for server logs. `OpenCode: Restart Server` re-spawns the
 backend. The v2 API is used (`/api/*`); older opencode 1.x builds that only serve `/session`
 are not supported.
+
+A turn run by another client is only visible here if that client used **this** server. A prompt from
+TelegramNotify does, because it submits to the server named in `~/.config/opencode/service.json`,
+which this extension publishes as soon as it starts or adopts a server. A client that starts its own
+private server (`opencode run --standalone`) keeps its events to itself: the turn exists, and the
+history shows it after a reload, but nothing streams into the transcript while it runs.

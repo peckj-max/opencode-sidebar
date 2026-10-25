@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { OpenCodeServer } = require('./src/server');
 const { Chat, textOfContent, summarizeTool } = require('./src/session');
 const { runEvents } = require('./src/events');
+const live = require('./src/live');
 const { ActiveFileTracker, describeEditor, toAttachment, openReference } = require('./src/context');
 
 const VIEW_TYPE = 'opencode.chat';
@@ -23,6 +24,8 @@ let started = false;
 /** Last prompt sent, so an instruction-initialization failure can be retried. */
 let lastSend = null;
 let retryArmed = false;
+/** A session created by another client is being adopted; only one at a time. */
+let followingSession = false;
 
 function log(msg) {
   if (output) output.appendLine(msg);
@@ -422,6 +425,28 @@ async function refreshTitle() {
 let turnWatchdog = null;
 let lastEventAt = 0; // last server event, so the watchdog only fires on real silence
 
+/** A refresh is already queued; the event burst of one turn must not flood it. */
+let sessionsRefreshTimer = null;
+
+/**
+ * Refreshes the session list shortly after the server reports a change. Sessions
+ * are created and named by whichever client runs the turn, so a prompt sent from
+ * Telegram would otherwise only appear after reopening the list.
+ */
+function scheduleSessionsRefresh() {
+  if (sessionsRefreshTimer) return;
+  sessionsRefreshTimer = setTimeout(() => {
+    sessionsRefreshTimer = null;
+    postSessions();
+  }, 300);
+}
+
+/**
+ * Prompts this panel just sent, so their echo from the server does not draw a
+ * second bubble.
+ */
+const localPrompts = live.createLocalPrompts();
+
 /**
  * Safety net for a lost terminal event. An SSE reconnect can drop the
  * session.execution.* event that ends a turn, which would otherwise leave the
@@ -498,6 +523,29 @@ function onEvent(ev) {
   // dropping those events left the panel silent with no response. The session
   // id check below is what actually isolates our conversation.
   lastEventAt = Date.now();
+
+  // Sessions also come from other clients — the desktop app, a second window, or a
+  // prompt sent from Telegram — so the list follows the server instead of waiting
+  // to be reopened, which is what made it look stale.
+  if (live.changesSessionList(ev.type)) scheduleSessionsRefresh();
+
+  // With nothing open yet, follow a session another client just created in this
+  // workspace: its turn then renders here, instead of events arriving for a
+  // session the panel never adopts.
+  if (ev.type === 'session.created' && !followingSession) {
+    const id = String(data.sessionID || data.sessionId || '');
+    if (live.shouldFollowSession(data, { sessionId: chat.sessionId, directory: server.dir })) {
+      followingSession = true;
+      // After the events of this turn, so the transcript is read as it streams.
+      setTimeout(() => {
+        switchSession(id)
+          .catch((err) => log(`[ext] could not follow session ${id}: ${err.message}`))
+          .finally(() => {
+            followingSession = false;
+          });
+      }, 0);
+    }
+  }
 
   const sessionId = data.sessionID || data.sessionId;
   const ours = !sessionId || !chat.sessionId || sessionId === chat.sessionId;
@@ -617,13 +665,23 @@ function onEvent(ev) {
     case 'session.created':
       noteChildSession(data);
       break;
-    case 'session.inbox.enqueued':
+    case 'session.inbox.enqueued': {
       // A system reminder (the plan-mode preamble is one) is queued as a
       // `synthetic` item; the model's next message answers it, not the user.
-      if (data.item && (data.item.type === 'synthetic' || data.item.type === 'system')) {
+      if (live.isSystemQueuedItem(data)) {
         pendingSystemReply = true;
+        break;
+      }
+      // A prompt from another client — the desktop app, a second window, or
+      // Telegram — is part of this conversation too, so its bubble is drawn here
+      // instead of only after the transcript is reloaded. Our own prompts are
+      // already on screen when they are sent.
+      const text = live.queuedPrompt(data);
+      if (text && !localPrompts.take(text)) {
+        provider.post({ type: 'user-message', text, at: ev.created || Date.now() });
       }
       break;
+    }
     case 'session.tool.input.started':
       // Remember call id -> tool name so a permission request can name its tool.
       if (data.id && data.name) toolNames.set(data.id, String(data.name));
@@ -1061,6 +1119,7 @@ async function handleWebviewMessage(msg) {
         await ensureStarted();
         lastSend = { text: msg.text || '', files: msg.files || [] };
         retryArmed = true;
+        localPrompts.remember(lastSend.text);
         provider.post({ type: 'user-message', text: lastSend.text, files: lastSend.files, at: Date.now() });
         await chat.send(lastSend.text, lastSend.files);
         startTurnWatchdog();

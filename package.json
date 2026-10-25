@@ -13,6 +13,9 @@
     "Chat"
   ],
   "main": "./extension.js",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
   "activationEvents": [
     "onStartupFinished",
     "onView:opencode.chat",
@@ -131,8 +134,8 @@
         },
         "opencode.server.password": {
           "type": "string",
-          "default": "654321",
-          "markdownDescription": "Password for the server (Basic auth user `opencode`), stored in plain text in your settings and written to `~/.config/opencode/service.json`. Clear it to have opencode generate a random password each start."
+          "default": "",
+          "markdownDescription": "Password for the server (Basic auth user `opencode`), stored in plain text in your settings and written to `~/.config/opencode/service.json`. Empty by default, so opencode generates a random password each start; set it only to keep a password across restarts (e.g. for a browser).\n\nPrefer a workspace or user setting over a shared value, and do not commit one."
         },
         "opencode.server.extraArgs": {
           "type": "array",

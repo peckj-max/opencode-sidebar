@@ -26,7 +26,8 @@ function writeServiceFile(values) {
   fs.mkdirSync(dir, { recursive: true });
   // Replace atomically: another opencode client may read the file at any moment.
   const tmp = `${SERVICE_FILE}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(values, null, 2) + '\n', 'utf8');
+  // The file carries the server password, so keep it owner-only.
+  fs.writeFileSync(tmp, JSON.stringify(values, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, SERVICE_FILE);
 }
 

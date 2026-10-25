@@ -3,3 +3,5 @@
 .vscodeignore
 *.vsix
 node_modules/**
+test/**
+AGENTS.md
