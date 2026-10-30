@@ -28,9 +28,19 @@
   const bookmarksListEl = document.getElementById('bookmarks-list');
   const bookmarksSearchEl = document.getElementById('bookmarks-search');
   const sendBtn = document.getElementById('send');
+  const btnReport = document.getElementById('btn-report');
   const btnBookmarks = document.getElementById('btn-bookmarks');
   const btnHistory = document.getElementById('btn-history');
   const btnNew = document.getElementById('btn-new');
+  const reportEl = document.getElementById('report');
+  const reportScopeEl = document.getElementById('report-scope');
+  const reportNoteEl = document.getElementById('report-note');
+  const reportBodyEl = document.getElementById('report-body');
+  const reportRefreshBtn = document.getElementById('report-refresh');
+  const reportCloseBtn = document.getElementById('report-close');
+  const reportKeyBtn = document.getElementById('report-key');
+  const reportKeyLabel = document.getElementById('report-key-label');
+  const reportKeyMenu = document.getElementById('report-key-menu');
   const dropzone = document.getElementById('dropzone');
 
   const ICON_COPY =
@@ -76,6 +86,11 @@
   let bookmarkedIds = new Set();
   let sessionFilter = '';
   let bookmarkFilter = '';
+  let reportDays = 30;
+  let reportLoading = false;
+  // The account filter: an identity id, or '' for "All accounts".
+  let reportIdentity = '';
+  let reportIdentities = [];
   let lastDateKey = null; // last day divider emitted
   const responseStarts = new Map(); // assistantMessageID -> start time
   let pendingPermission = null; // { el, requestId } while an approval is unanswered
@@ -1336,6 +1351,304 @@
     if (except !== 'bookmarks') bookmarksEl.classList.add('hidden');
   }
 
+  // ------------------------------------------------------------------- report
+
+  /** Tokens read better abbreviated in a sidebar, with the exact figure on hover. */
+  function compactCount(n) {
+    const v = Number(n) || 0;
+    if (v < 1000) return String(v);
+    if (v < 1e6) return (v / 1000).toFixed(v < 10000 ? 2 : 1) + 'K';
+    // A month of cache reads runs to billions, which "4809.8M" states badly.
+    if (v < 1e9) return (v / 1e6).toFixed(v < 1e7 ? 2 : 1) + 'M';
+    return (v / 1e9).toFixed(2) + 'B';
+  }
+
+  function exactCount(n) {
+    return (Number(n) || 0).toLocaleString();
+  }
+
+  function money(usd) {
+    const v = Number(usd) || 0;
+    // Four decimals: a single day of light use is often well under a cent.
+    return '$' + v.toFixed(4);
+  }
+
+  function cell(row, text, className, title) {
+    const td = document.createElement('td');
+    td.className = className || '';
+    td.textContent = text;
+    if (title) td.title = title;
+    row.appendChild(td);
+    return td;
+  }
+
+  /** The daily table: newest day first, plus a totals row over the window. */
+  function renderReportTable(report) {
+    const table = document.createElement('table');
+    table.className = 'report-table';
+
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const [label, cls] of [
+      ['Date', 'c-date'],
+      ['Requests', 'c-num'],
+      ['Input', 'c-num'],
+      ['Output', 'c-num'],
+      ['Cached', 'c-num'],
+      ['Cost', 'c-num']
+    ]) {
+      const th = document.createElement('th');
+      th.textContent = label;
+      th.className = cls;
+      if (label === 'Input' || label === 'Output' || label === 'Cached') th.title = label + ' tokens';
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+
+    const body = document.createElement('tbody');
+    for (const d of report.days) {
+      const tr = document.createElement('tr');
+      cell(tr, d.date, 'c-date');
+      cell(tr, exactCount(d.requests), 'c-num');
+      cell(tr, compactCount(d.inputTokens), 'c-num', exactCount(d.inputTokens) + ' input tokens');
+      cell(tr, compactCount(d.outputTokens), 'c-num', exactCount(d.outputTokens) + ' output tokens');
+      cell(tr, compactCount(d.cachedTokens), 'c-num', exactCount(d.cachedTokens) + ' cached tokens');
+      cell(tr, money(d.costUsd), 'c-num');
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+
+    const foot = document.createElement('tfoot');
+    const footRow = document.createElement('tr');
+    const t = report.totals || {};
+    cell(footRow, 'Total', 'c-date');
+    cell(footRow, exactCount(t.requests), 'c-num');
+    cell(footRow, compactCount(t.inputTokens), 'c-num', exactCount(t.inputTokens) + ' input tokens');
+    cell(footRow, compactCount(t.outputTokens), 'c-num', exactCount(t.outputTokens) + ' output tokens');
+    cell(footRow, compactCount(t.cachedTokens), 'c-num', exactCount(t.cachedTokens) + ' cached tokens');
+    cell(footRow, money(t.costUsd), 'c-num');
+    foot.appendChild(footRow);
+    table.appendChild(foot);
+
+    return table;
+  }
+
+  /**
+   * An error state the panel cannot resolve by itself: say what happened and
+   * offer a retry. Anything that needs a real fix (connect a provider, grant
+   * Usage read) is named in the message, so there is nothing to configure here.
+   */
+  function renderReportError(message) {
+    const wrap = document.createElement('div');
+    wrap.className = 'report-keyform';
+
+    const tip = document.createElement('p');
+    tip.className = 'report-hint';
+    tip.textContent = message;
+    wrap.appendChild(tip);
+
+    const again = document.createElement('button');
+    again.type = 'button';
+    again.className = 'report-btn';
+    again.textContent = 'Try again';
+    again.addEventListener('click', () => requestReport(true));
+    wrap.appendChild(again);
+
+    return wrap;
+  }
+
+  /**
+   * The meta line, which now carries only what is worth a sentence: a failure,
+   * or a read still in progress. The window, the filters in use and the key's
+   * origin all read from the header and its buttons, so repeating them here was
+   * noise on every successful load.
+   */
+  function renderReportNote(msg) {
+    reportNoteEl.innerHTML = '';
+    reportNoteEl.className = 'report-note';
+    if (msg && msg.error) {
+      reportNoteEl.classList.add('error');
+      reportNoteEl.textContent = msg.error;
+    }
+  }
+
+  function renderReport(msg) {
+    reportLoading = false;
+    reportRefreshBtn.disabled = false;
+    renderReportNote(msg);
+    reportBodyEl.innerHTML = '';
+
+    if (msg && msg.error) {
+      reportBodyEl.appendChild(renderReportError(msg.error));
+      return;
+    }
+
+    const report = (msg && msg.report) || null;
+    if (report) {
+      reportIdentities = report.identities || [];
+      // An account that has dropped out of the export (an older range) must not
+      // stay selected and filter the table down to nothing.
+      if (reportIdentity && !reportIdentities.some((i) => i.id === reportIdentity)) reportIdentity = '';
+      renderReportFilters(report);
+    }
+
+    const days = (report && report.days) || [];
+    // The header carries the count that used to lead the meta line, so the
+    // window is still stated once the rest of that line is gone.
+    const measured = days.length || ((report && report.requested) || reportDays);
+    reportScopeEl.textContent = measured + (measured === 1 ? ' day' : ' days');
+    if (!days.length) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.textContent = reportIdentity
+        ? 'No usage recorded for this account in this window.'
+        : 'No usage recorded in this window.';
+      reportBodyEl.appendChild(empty);
+      return;
+    }
+    reportBodyEl.appendChild(renderReportTable(report));
+  }
+
+  // ---------------------------------------------------------- report filters
+
+  /** The account filter is a menu of single choices, the first being "All". */
+  function closeReportMenus() {
+    reportKeyMenu.classList.add('hidden');
+    reportKeyBtn.setAttribute('aria-expanded', 'false');
+    reportKeyBtn.classList.remove('open');
+  }
+
+  /**
+   * Show a filter menu under its button, pulled back inside the panel when it
+   * would spill. `right: 0` alone aligns it to the button, and a button in the
+   * middle of a narrow sidebar leaves no room on the left for a 240px menu — so
+   * the final position is measured rather than left to the cascade.
+   */
+  function openReportMenu(menu, btn) {
+    menu.classList.remove('hidden');
+    btn.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
+
+    const panel = reportEl.getBoundingClientRect();
+    const inset = 4;
+    // Cap first, then measure: a 240px menu cannot be placed inside a 200px
+    // sidebar, so the width has to follow the panel before the position does.
+    menu.style.maxWidth = Math.round(panel.width - inset * 2) + 'px';
+
+    const anchor = btn.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const wanted = anchor.right - width;
+    const clamped = Math.max(panel.left + inset, Math.min(wanted, panel.right - width - inset));
+    const parent = menu.offsetParent ? menu.offsetParent.getBoundingClientRect() : panel;
+    menu.style.right = 'auto';
+    menu.style.left = Math.round(clamped - parent.left) + 'px';
+  }
+
+  function filterRow(name, detail, current, onPick, disabled) {
+    const row = document.createElement('div');
+    row.className = 'picker-item' + (current ? ' current' : '') + (disabled ? ' disabled' : '');
+    row.setAttribute('role', 'menuitemradio');
+    row.setAttribute('aria-checked', current ? 'true' : 'false');
+
+    const text = document.createElement('span');
+    text.className = 'picker-name';
+    text.textContent = name;
+    row.appendChild(text);
+
+    if (detail) {
+      const meta = document.createElement('span');
+      meta.className = 'picker-meta';
+      meta.textContent = detail;
+      row.appendChild(meta);
+    }
+
+    const check = document.createElement('span');
+    check.className = 'picker-check';
+    check.innerHTML = ICON_CHECK;
+    row.appendChild(check);
+
+    if (disabled) row.title = detail || '';
+    else row.addEventListener('click', onPick);
+    return row;
+  }
+
+  /** Rebuild both menus and the labels from the report's own inventory. */
+  function renderReportFilters(report) {
+    // --- Account ---
+    const selected = reportIdentities.find((i) => i.id === reportIdentity) || null;
+    reportKeyLabel.textContent = selected ? selected.name : 'All accounts';
+    reportKeyBtn.title = selected
+      ? 'Billing account: ' + selected.name + ' (' + selected.detail + ')'
+      : 'Filter by account — showing every account';
+
+    reportKeyMenu.innerHTML = '';
+    reportKeyMenu.appendChild(
+      filterRow('All accounts', reportIdentities.length ? reportIdentities.length + ' in range' : '', !reportIdentity, () => {
+        closeReportMenus();
+        pickIdentity('');
+      })
+    );
+    for (const who of reportIdentities) {
+      reportKeyMenu.appendChild(
+        filterRow(
+          who.name,
+          who.detail,
+          reportIdentity === who.id,
+          () => {
+            closeReportMenus();
+            pickIdentity(who.id);
+          },
+          false
+        )
+      );
+    }
+  }
+
+  function pickIdentity(id) {
+    if (id === reportIdentity) return;
+    reportIdentity = id;
+    // Re-aggregate on the host from the export it already holds: switching a
+    // filter must not cost another request.
+    requestReport(false, true);
+  }
+
+  function requestReport(refresh, refilter) {
+    if (reportLoading) return;
+    reportLoading = true;
+    reportRefreshBtn.disabled = true;
+    if (!refilter) {
+      reportNoteEl.className = 'report-note';
+      reportNoteEl.textContent = 'Loading…';
+    }
+    if (refresh) reportBodyEl.innerHTML = '';
+    vscode.postMessage({
+      type: 'requestReport',
+      days: reportDays,
+      refresh: refresh === true,
+      identity: reportIdentity
+    });
+  }
+
+  /**
+   * The report replaces the transcript rather than floating over it: it is a
+   * different view of the same panel, and a 30-row table under an overlay would
+   * put the composer out of reach.
+   */
+  function setReportOpen(open) {
+    reportEl.classList.toggle('hidden', !open);
+    messagesEl.classList.toggle('hidden', open);
+    btnReport.classList.toggle('on', open);
+    if (!open) {
+      closeReportMenus();
+      return;
+    }
+    closePanels();
+    closePickers();
+    closeReportMenus();
+    if (!reportBodyEl.childElementCount) requestReport(false);
+  }
+
   // The overlay panels and the title-bar button each is toggled from. A click
   // outside both dismisses the panel.
   const PANELS = [
@@ -1377,6 +1690,8 @@
       }
     }
     if (!text && !files.length) return;
+    // Asking a question is leaving the report behind, so show the turn it starts.
+    setReportOpen(false);
     vscode.postMessage({ type: 'send', text: text, files: files });
     inputEl.value = '';
     autoSize();
@@ -1826,6 +2141,9 @@
         for (const rec of turns.values()) applyBookmark(rec);
         renderBookmarks();
         break;
+      case 'report':
+        renderReport(msg);
+        break;
       case 'focus-message':
         focusMessage(msg.messageId);
         break;
@@ -1893,10 +2211,12 @@
 
   btnNew.addEventListener('click', () => {
     closePanels();
+    setReportOpen(false);
     vscode.postMessage({ type: 'newSession' });
   });
 
   btnHistory.addEventListener('click', () => {
+    setReportOpen(false);
     const isHidden = sessionsEl.classList.toggle('hidden');
     if (!isHidden) {
       closePanels('sessions');
@@ -1909,6 +2229,7 @@
   });
 
   btnBookmarks.addEventListener('click', () => {
+    setReportOpen(false);
     const isHidden = bookmarksEl.classList.toggle('hidden');
     if (!isHidden) {
       closePanels('bookmarks');
@@ -1918,6 +2239,21 @@
       bookmarksSearchEl.focus();
       vscode.postMessage({ type: 'listBookmarks' });
     }
+  });
+
+  btnReport.addEventListener('click', () => {
+    setReportOpen(reportEl.classList.contains('hidden'));
+  });
+
+  reportCloseBtn.addEventListener('click', () => setReportOpen(false));
+
+  reportRefreshBtn.addEventListener('click', () => requestReport(true));
+
+  reportKeyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasHidden = reportKeyMenu.classList.contains('hidden');
+    closeReportMenus();
+    if (wasHidden) openReportMenu(reportKeyMenu, reportKeyBtn);
   });
 
   sessionsSearchEl.addEventListener('input', () => {
@@ -1945,12 +2281,21 @@
       closePanels();
       break;
     }
+    // And for the report's account menu.
+    for (const [menu, btn] of [[reportKeyMenu, reportKeyBtn]]) {
+      if (menu.classList.contains('hidden')) continue;
+      if (e.target.closest('#' + menu.id) || e.target.closest('#' + btn.id)) continue;
+      closeReportMenus();
+      break;
+    }
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closePickers();
       closePanels();
+      closeReportMenus();
+      setReportOpen(false);
       return;
     }
     // Claude Code style: 1/2/3 answer a pending permission prompt, unless the

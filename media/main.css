@@ -1617,3 +1617,205 @@ button.secondary:hover {
   pointer-events: none;
   z-index: 40;
 }
+
+/* --------------------------------------------------------------------- report */
+/* The report takes the transcript's place, so it inherits the same flex slot
+   and scroll behaviour rather than floating over the composer. */
+
+.report {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 6px 10px 10px;
+}
+
+.report-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  /* Four controls plus the window label do not fit a narrow sidebar on one
+     line, so the row wraps rather than scrolling sideways. */
+  flex-wrap: wrap;
+  gap: 6px;
+  row-gap: 4px;
+  font-size: 12px;
+  /* A header is a heading, not a note: full strength, unlike the meta line. */
+  color: var(--vscode-foreground);
+}
+
+.report-scope {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  /* Shrinks before anything wraps, so the label never forces a scrollbar. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.report-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 5px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.18));
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.report-btn:hover:not(:disabled),
+.report-btn.open {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+
+.report-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* A filter button carries the current choice, so it may need to shrink: the
+   header has a fixed width and the choice can be a long address. */
+.report-btn.filter {
+  max-width: 11rem;
+  min-width: 0;
+  justify-content: space-between;
+}
+
+.report-btn.filter > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.report-btn .chev {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+.report-filter {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* Opens downward from its button, unlike the composer pickers that open upward
+   from the footer. Right-aligned so a wide menu does not run off the panel. */
+.report-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  /* No minimum: a narrow sidebar must not be forced to scroll, and the script
+     caps the width against the panel before measuring the position. */
+  max-width: 20rem;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background, var(--vscode-sideBar-background)));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
+  animation: menuin 0.14s ease;
+}
+
+.report-menu .picker-item {
+  cursor: pointer;
+}
+
+.report-menu .picker-item.disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.report-note {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--vscode-foreground);
+  opacity: 0.85;
+}
+
+/* Only a failure or a read in progress fills this line now, so an idle report
+   must not leave a gap where the old summary used to be. */
+.report-note:empty {
+  display: none;
+}
+
+.report-note.error {
+  opacity: 1;
+  color: var(--vscode-errorForeground);
+}
+
+.report-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Six readable columns do not fit a very narrow sidebar. Scrolling here keeps
+     that inside the table instead of sliding the whole panel sideways. */
+  overflow-x: auto;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  color: var(--vscode-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-table th,
+.report-table td {
+  padding: 5px 5px;
+  white-space: nowrap;
+}
+
+.report-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+  background: var(--vscode-sideBar-background);
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.report-table tbody tr:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.report-table .c-date {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.report-table .c-num {
+  text-align: right;
+}
+
+.report-table tfoot td {
+  padding-top: 6px;
+  font-weight: 700;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.report-keyform {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+
+.report-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+

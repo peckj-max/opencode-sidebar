@@ -81,6 +81,34 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
   asks for permission is access outside the workspace and reads of `.env` files, which is exactly
   what is worth a look.
 
+- **Usage report** — the **report icon** in the title bar (before Bookmarks) shows a table of the
+  last 30 days, newest first: date, requests, input tokens, output tokens, cached tokens and cost,
+  with a totals row. It reads the Console's own per-day export
+  (`GET /console/api/v2/usage/export`), which is the only place the *price* is known — the local
+  harness logs carry tokens but would have to guess what they cost. No setup is needed: the Console
+  API key is taken from the opencode server the panel is already talking to
+  (`GET /api/credential`), so the report is billed against exactly the account your prompts are.
+  The account button shows which one is in use, so a wrong one is easy to spot. The key needs the **Usage
+  (Read)** permission; without it the panel says so instead of showing an empty table. The report
+  takes the transcript's place rather than floating over it, so the composer stays reachable, and
+  sending a prompt or pressing <kbd>Esc</kbd> closes it. A read is cached for a minute — **Refresh**
+  always re-queries.
+
+  One filter sits beside **Refresh**, defaulting to everything:
+
+  - **Account** — the export attributes each request to the credential that paid for it, so this
+    lists every member account and service account the range contains and narrows the table to one.
+    Switching is instant: the export is already in memory, so only the totals are recomputed and no
+    request is made. The button itself names the account in use, because a filtered table is smaller
+    than the account's real usage.
+
+  The export is also the limit: it has no client dimension. `/console/api/request-logs` carries the
+  user agent, but that route authenticates with the Console's browser session rather than an API
+  key, so it is not reachable from here — and the daily export cannot be split by client without it.
+
+  The header states the window once, as a day count, and nothing else — the button carries the
+  filter, so a caption repeating it would be noise on every load.
+
 ## Requirements
 
 - VS Code 1.106 or newer.

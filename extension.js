@@ -7,6 +7,7 @@ const { OpenCodeServer } = require('./src/server');
 const { Chat, textOfContent, summarizeTool } = require('./src/session');
 const { runEvents } = require('./src/events');
 const live = require('./src/live');
+const usage = require('./src/usage');
 const { ActiveFileTracker, describeEditor, toAttachment, openReference } = require('./src/context');
 
 const VIEW_TYPE = 'opencode.chat';
@@ -1109,6 +1110,28 @@ async function handleWebviewMessage(msg) {
         await ensureStarted();
         await postBookmarks();
         break;
+      case 'requestReport': {
+        // The key lives in the server's credential store, so the server must be
+        // up before the report can be authenticated. A failure here is reported
+        // to the webview rather than thrown: the report panel shows it.
+        await ensureStarted();
+        try {
+          const report = await usage.dailyReport(server, {
+            days: msg.days || 30,
+            refresh: msg.refresh === true,
+            identity: msg.identity || ''
+          });
+          provider.post({ type: 'report', report });
+        } catch (err) {
+          log(`[ext] report failed: ${err.message}`);
+          provider.post({
+            type: 'report',
+            error: err.message,
+            code: err.code || 'ERROR'
+          });
+        }
+        break;
+      }
       case 'gotoBookmark':
         await gotoBookmark(msg.payload || msg);
         break;
@@ -1440,6 +1463,9 @@ class ChatViewProvider {
 <header class="titlebar">
   <span id="session-title" class="brand" title="Click to rename this session" tabindex="0" role="button">OpenCode</span>
   <span class="spacer"></span>
+  <button id="btn-report" class="iconbtn" title="Report: daily usage for the last 30 days">
+    <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path d="M2.9 13.1h10.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M4.6 11V7.4M7.4 11V3.6M10.2 11V5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
   <button id="btn-bookmarks" class="iconbtn" title="Bookmarks">
     <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path d="M4 2.2h8v11.6L8 10.9l-4 2.9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
   </button>
@@ -1460,6 +1486,23 @@ class ChatViewProvider {
 </div>
 <div id="status" class="status"></div>
 <main id="messages" class="messages"></main>
+<section id="report" class="report hidden" aria-label="Usage report">
+  <div class="report-head">
+    <span id="report-scope" class="report-scope">30 days</span>
+    <span class="spacer"></span>
+    <div class="report-filter">
+      <button id="report-key" class="report-btn filter" title="Filter by account" aria-haspopup="true" aria-expanded="false">
+        <span id="report-key-label">All accounts</span>
+        <svg class="chev" viewBox="0 0 16 16" width="9" height="9" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div id="report-key-menu" class="report-menu hidden" role="menu"></div>
+    </div>
+    <button id="report-refresh" class="report-btn" title="Reload the report">Refresh</button>
+    <button id="report-close" class="report-btn" title="Close the report">Close</button>
+  </div>
+  <div id="report-note" class="report-note"></div>
+  <div id="report-body" class="report-body"></div>
+</section>
 <footer class="composer">
   <div class="composer-panel">
     <div id="chips" class="chips"></div>
