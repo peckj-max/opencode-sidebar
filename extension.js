@@ -2,12 +2,16 @@
 
 const vscode = require('vscode');
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const { OpenCodeServer } = require('./src/server');
 const { Chat, textOfContent, summarizeTool } = require('./src/session');
 const { runEvents } = require('./src/events');
 const live = require('./src/live');
 const usage = require('./src/usage');
+const drop = require('./media/drop');
 const { ActiveFileTracker, describeEditor, toAttachment, openReference } = require('./src/context');
 
 const VIEW_TYPE = 'opencode.chat';
@@ -202,6 +206,10 @@ function activate(context) {
   tracker = new ActiveFileTracker(() => sendContext());
   tracker.init();
 
+  // Copies of files dropped from outside the workspace are scratch files; the
+  // ones from previous sessions are cleared out on load.
+  cleanupDropCopies();
+
   server.onExit = (code) => {
     started = false;
     provider.post({ type: 'status', status: 'error', detail: `opencode server exited (${code})` });
@@ -212,6 +220,7 @@ function activate(context) {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.commands.registerCommand('opencode.addToChat', addToChat),
+    vscode.commands.registerCommand('opencode.addFilesToChat', addFilesToChat),
     vscode.commands.registerCommand('opencode.newSession', newSession),
     vscode.commands.registerCommand('opencode.restartServer', restart),
     vscode.commands.registerCommand('opencode.showConnection', showConnection),
@@ -1223,7 +1232,14 @@ async function handleWebviewMessage(msg) {
         await togglePin(msg.id);
         break;
       case 'addUris':
-        await addUris(msg.uris || []);
+        await addUris(msg.uris || [], msg.names || [], msg.types || [], msg.files || [], msg.skipped || []);
+        break;
+      case 'dropUnreadable':
+        // The webview saw a drop but VS Code handed it no path. Say so instead
+        // of leaving the drop looking like nothing happened.
+        vscode.window.showWarningMessage(
+          'OpenCode: the dropped item could not be read. Hold Shift while dragging a file from the Explorer, or right-click it there and choose "OpenCode: Add to Chat".'
+        );
         break;
       case 'interrupt':
         await chat.interrupt();
@@ -1251,6 +1267,12 @@ async function addToChat() {
     return;
   }
   const attachment = toAttachment(desc);
+  await revealPanel();
+  provider.post({ type: 'stage', attachment });
+}
+
+/** Bring the panel into view before staging, so the chips are seen landing. */
+async function revealPanel() {
   try {
     await vscode.commands.executeCommand(`workbench.view.extension.${CONTAINER_ID}`);
   } catch {
@@ -1261,7 +1283,47 @@ async function addToChat() {
   } catch {
     /* best effort */
   }
-  provider.post({ type: 'stage', attachment });
+}
+
+/**
+ * Explorer context menu: stage the selected files and folders. This is the
+ * reliable way in, because VS Code only forwards an Explorer drag to a webview
+ * while Shift is held.
+ *
+ * The Explorer passes the clicked URI and, for a multi-selection, the selected
+ * URIs as the second argument; older builds pass the whole selection as the
+ * first. Both shapes are accepted.
+ */
+async function addFilesToChat(first, selected) {
+  const found = [];
+  const collect = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+    } else if (typeof value === 'object' && typeof value.scheme === 'string' && typeof value.toString === 'function') {
+      found.push(value);
+    } else if (typeof value === 'object' && value.resourceUri) {
+      collect(value.resourceUri);
+    }
+  };
+  collect(first);
+  collect(selected);
+
+  const uris = [];
+  const seen = new Set();
+  for (const uri of found) {
+    if (uri.scheme !== 'file') continue;
+    const key = uri.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uris.push(key);
+  }
+  if (!uris.length) {
+    vscode.window.showWarningMessage('OpenCode: nothing to attach — select files or folders in the Explorer.');
+    return;
+  }
+  await revealPanel();
+  await addUris(uris);
 }
 
 async function newSession() {
@@ -1335,32 +1397,237 @@ async function togglePin(id) {
   await postSessions();
 }
 
-/** Turn dropped/pasted URIs into staged attachments. */
-async function addUris(uris) {
-  let added = 0;
-  for (const raw of uris) {
-    const attachment = uriToAttachment(raw);
-    if (attachment) {
-      provider.post({ type: 'stage', attachment });
-      added++;
+/**
+ * Resolve a drop to attachments, whatever shape it arrived in.
+ *
+ * A drop from the Explorer reaches the webview in whatever shape the frame can
+ * read, which is not usually a path: an absolute path, a `file:` URL, a
+ * workspace-relative label, or only a bare file name. Each shape is resolved
+ * here, because guessing wrong leaves the drop looking like nothing happened.
+ *
+ * A file from outside the workspace has no shape that names its path at all —
+ * the frame is handed a `File` and nothing else — so the bytes that came with
+ * it are written beside the session and that copy is staged instead.
+ *
+ * @param {{uris?:string[], names?:string[], files?:Array<{name:string,data:string}>}} got
+ * @returns {Promise<{attachments:Array<{uri:string,name:string}>, unresolved:string[], staged:string[]}>}
+ */
+async function resolveDrop(got) {
+  const attachments = new Map();
+  const unresolved = [];
+  const staged = [];
+  const add = (uri, label) => {
+    if (!uri) return;
+    const relative = label || vscode.workspace.asRelativePath(uri, false) || uri.fsPath;
+    const attachment = toAttachment({ fsPath: uri.fsPath, relative, start: null, end: null });
+    attachments.set(attachment.uri, attachment);
+  };
+
+  // The byte copies travel with the drop; each is claimed once so a name is
+  // never staged twice.
+  const copies = (got.files || []).map((entry, index) => ({ entry, index: index, claimed: false }));
+  const claim = (name) => {
+    const match = copies.find((c) => !c.claimed && c.entry && c.entry.name === name);
+    if (!match) return null;
+    match.claimed = true;
+    return match.entry;
+  };
+
+  for (const raw of got.uris || []) {
+    const uri = await resolveDroppedPath(raw);
+    if (uri) {
+      add(uri);
+      // A path already answers for the file of the same name.
+      claim(path.basename(uri.fsPath));
+    } else {
+      unresolved.push(String(raw));
     }
   }
-  if (!added && uris.length) {
-    vscode.window.showWarningMessage('OpenCode: dropped items must be local files or folders.');
+
+  // A webview is given no path for a native File, only its name; a name that
+  // matches one file in the workspace is still unambiguous.
+  for (const name of got.names || []) {
+    const uri = await resolveDroppedName(name);
+    if (uri) {
+      add(uri);
+      claim(path.basename(uri.fsPath));
+      continue;
+    }
+    const copy = claim(String(name));
+    const written = copy ? await writeDropCopy(copy) : null;
+    if (written) {
+      add(vscode.Uri.file(written.fsPath), written.name);
+      staged.push(written.name);
+    } else {
+      unresolved.push(String(name));
+    }
+  }
+
+  // Anything left over had no name to match on; stage it rather than drop it.
+  for (const copy of copies) {
+    if (copy.claimed) continue;
+    copy.claimed = true;
+    const written = await writeDropCopy(copy.entry);
+    if (written) {
+      add(vscode.Uri.file(written.fsPath), written.name);
+      staged.push(written.name);
+    }
+  }
+
+  return {
+    attachments: Array.from(attachments.values()),
+    unresolved: unresolved,
+    staged: staged
+  };
+}
+
+/**
+ * Where a copy of a dropped file goes: a fresh folder per drop, under the
+ * system temp directory, so two drops of the same name cannot collide.
+ */
+const DROP_DIR = path.join(os.tmpdir(), 'opencode-sidebar-drops');
+/** Copies are context for a conversation; a stale one is worth nothing. */
+const DROP_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Write a dropped file's bytes out, so opencode can read it from disk. */
+async function writeDropCopy(entry) {
+  if (!entry || typeof entry.data !== 'string' || !entry.data) return null;
+  const name = path.basename(String(entry.name || 'dropped')) || 'dropped';
+  const dir = path.join(DROP_DIR, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+  const target = path.join(dir, name);
+  try {
+    const bytes = Buffer.from(entry.data, 'base64');
+    if (!bytes.length) return null;
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(dir));
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(target), bytes);
+    log(`[dnd] staged a copy of ${name} at ${target}`);
+    return { fsPath: target, name: name };
+  } catch (err) {
+    log(`[dnd] could not stage ${name}: ${err.message}`);
+    return null;
   }
 }
 
-function uriToAttachment(raw) {
-  if (!raw || typeof raw !== 'string') return null;
-  let uri;
+/** Remove copies from previous sessions; they are not referenced any more. */
+async function cleanupDropCopies() {
   try {
-    uri = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw) ? vscode.Uri.parse(raw) : vscode.Uri.file(raw);
+    const entries = await fs.promises.readdir(DROP_DIR, { withFileTypes: true });
+    const cutoff = Date.now() - DROP_MAX_AGE_MS;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(DROP_DIR, entry.name);
+      try {
+        const stat = await fs.promises.stat(full);
+        if (stat.mtimeMs < cutoff) await fs.promises.rm(full, { recursive: true, force: true });
+      } catch {
+        /* another window may be using it */
+      }
+    }
+  } catch {
+    /* no copies yet */
+  }
+}
+
+/** A size a person can read, for the warning a skipped drop produces. */
+function formatBytes(n) {
+  const value = Number(n) || 0;
+  if (value >= 1024 * 1024) return `${Math.round(value / (1024 * 1024))} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+}
+
+/** Why a dropped file could not be carried, in words rather than a code. */
+function describeSkip(skip) {
+  const name = (skip && skip.name) || 'an item';
+  switch (skip && skip.reason) {
+    case 'too large':
+      return `${name} is ${formatBytes(skip.size)} — files over ${formatBytes(drop.MAX_FILE_BYTES)} are not carried`;
+    case 'too much data':
+      return `${name} would take the drop over ${formatBytes(drop.MAX_TOTAL_BYTES)}`;
+    case 'too many files':
+      return `${name} was not carried — at most ${drop.MAX_FILES} files per drop`;
+    case 'empty or a folder':
+      return `${name} is empty, or a folder`;
+    case 'empty':
+      return `${name} is empty`;
+    default:
+      return `${name} could not be read`;
+  }
+}
+
+/** Stage a drop, and report anything that could not be staged. */
+async function addUris(uris, names, types, files, skipped) {
+  const resolved = await resolveDrop({ uris: uris, names: names, files: files });
+  for (const attachment of resolved.attachments) provider.post({ type: 'stage', attachment });
+
+  // A file the webview already rejected is not also "not found": report the one
+  // real reason rather than both, which read as two different failures.
+  const skippedList = skipped || [];
+  const rejected = new Set(skippedList.map((s) => String(s.name || '')));
+  const missing = resolved.unresolved.filter((u) => !rejected.has(String(u)));
+  const reasons = skippedList
+    .map(describeSkip)
+    .concat(missing.map((u) => `${u} is not in this workspace, and no path came with the drop`));
+
+  if (resolved.attachments.length) {
+    log(
+      `[dnd] staged ${resolved.attachments.map((a) => a.name).join(', ')}` +
+        (resolved.staged.length ? ` (${resolved.staged.length} copied from outside the workspace)` : '')
+    );
+    // Partly successful: the chips are there, but say what was left behind.
+    if (reasons.length) {
+      vscode.window.showWarningMessage(`OpenCode: ${reasons.slice(0, 3).join('; ')}.`);
+    }
+    return;
+  }
+
+  log(
+    `[dnd] unresolved drop — types: ${(types || []).join(', ') || '(none)'}; ` +
+      `values: ${reasons.join(' | ') || '(none)'}`
+  );
+  const tooBig = skippedList.some((s) => s.reason === 'too large' || s.reason === 'too much data');
+  const hint = tooBig
+    ? 'Open the file in the editor and press Ctrl+L to attach it, or move it into the workspace and drag it from the Explorer.'
+    : 'Right-click the file in the Explorer and choose "OpenCode: Add to Chat".';
+  vscode.window.showWarningMessage(
+    `OpenCode: ${reasons.length ? reasons.slice(0, 3).join('; ') : 'could not read the dropped item'}. ${hint}`
+  );
+}
+
+/**
+ * A dropped reference as a URI: a `file:` URL, an absolute path, or a path
+ * relative to a workspace folder (the labels VS Code writes are relative).
+ */
+async function resolveDroppedPath(raw) {
+  const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+  const resolved = await drop.resolvePath(raw, folders, async (candidate) => {
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!resolved) return null;
+  return drop.classify(resolved).kind === 'file-url' ? vscode.Uri.parse(resolved) : vscode.Uri.file(resolved);
+}
+
+/** A bare file name from a native File, matched against the workspace. */
+async function resolveDroppedName(name) {
+  const base = String(name || '').trim();
+  if (!base || /[\\/]/.test(base)) return null;
+  // A top-level entry of a folder resolves directly and needs no search.
+  const direct = await resolveDroppedPath(base);
+  if (direct) return direct;
+  try {
+    const matches = await vscode.workspace.findFiles(`**/${base}`, '**/node_modules/**', 10);
+    // Shallowest match wins, so a name shared by several folders is not
+    // resolved to an arbitrary deep copy.
+    const best = drop.shallowest(matches.map((u) => u.fsPath));
+    return best ? vscode.Uri.file(best) : null;
   } catch {
     return null;
   }
-  if (uri.scheme !== 'file') return null;
-  const relative = vscode.workspace.asRelativePath(uri, false) || uri.fsPath;
-  return toAttachment({ fsPath: uri.fsPath, relative, start: null, end: null });
 }
 
 async function openWebUI() {
@@ -1442,12 +1709,23 @@ class ChatViewProvider {
   getHtml(webview) {
     const nonce = crypto.randomBytes(16).toString('hex');
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
+    const dropUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'drop.js'));
+    const katexUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'vendor', 'katex.min.js'));
+    const katexStyleUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'vendor', 'katex.min.css')
+    );
     const markdownUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'markdown.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.css'));
     const csp = [
       "default-src 'none'",
       `img-src ${webview.cspSource} data:`,
-      `style-src ${webview.cspSource}`,
+      // KaTeX ships its own fonts, which its stylesheet loads from the extension.
+      `font-src ${webview.cspSource}`,
+      // KaTeX positions every glyph with style attributes (heights, vertical
+      // alignment), so inline styles have to be allowed for maths to lay out.
+      // Nothing here is interpolated into a style, and all model text is
+      // escaped by the renderer, so this does not open a script path.
+      `style-src ${webview.cspSource} 'unsafe-inline'`,
       `script-src 'nonce-${nonce}'`
     ].join('; ');
     return `<!DOCTYPE html>
@@ -1457,6 +1735,7 @@ class ChatViewProvider {
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${styleUri}">
+<link rel="stylesheet" href="${katexStyleUri}">
 <title>OpenCode</title>
 </head>
 <body>
@@ -1540,7 +1819,9 @@ class ChatViewProvider {
     <div id="agents-panel" class="picker-menu agents-panel hidden"></div>
   </div>
 </footer>
-<div id="dropzone" class="dropzone hidden">Drop files to add as context</div>
+<div id="dropzone" class="dropzone hidden">Drop files to add as context — hold <b>Shift</b> while dragging from the Explorer</div>
+<script nonce="${nonce}" src="${dropUri}"></script>
+<script nonce="${nonce}" src="${katexUri}"></script>
 <script nonce="${nonce}" src="${markdownUri}"></script>
 <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -1548,4 +1829,8 @@ class ChatViewProvider {
   }
 }
 
-module.exports = { activate, deactivate };
+module.exports = {
+  activate,
+  deactivate,
+  __test: { describeSkip, resolveDrop, addUris, resolveDroppedPath, resolveDroppedName, writeDropCopy }
+};

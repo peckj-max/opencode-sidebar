@@ -2354,44 +2354,187 @@
   });
 
   // Drag files from the Explorer (or anywhere) to add them as references.
-  function readUris(dt) {
-    const out = new Set();
-    if (!dt) return [];
-    const list = dt.getData('text/uri-list') || dt.getData('application/vnd.code.uri-list') || '';
-    for (const line of list.split(/\r?\n/)) {
-      const t = line.trim();
-      if (t && !t.startsWith('#')) out.add(t);
-    }
-    if (!out.size) {
-      const text = dt.getData('text/plain') || '';
-      for (const line of text.split(/\r?\n/)) {
-        const t = line.trim();
-        if (t && (/^[a-zA-Z]:[\\/]/.test(t) || t.startsWith('/') || t.startsWith('file:'))) out.add(t);
+  //
+  // VS Code keeps a webview disabled as a drop target while a drag from the
+  // Explorer is in flight (it would otherwise swallow drops meant for the
+  // editor), and re-enables it only while Shift is held — so the first event
+  // may be `dragover` rather than `dragenter`. Reading the payload lives in
+  // drop.js, which the host uses too: what a frame can actually read is often
+  // not a path, and the host has to resolve it.
+  // Drop support degrades quietly if the script did not load, rather than
+  // taking the whole panel down with it.
+  const drop = window.OCDrop || {
+    dragHasFiles: () => false,
+    fileList: () => [],
+    readDrop: () => ({ uris: [], names: [], types: [] }),
+    readFileData: async () => ({ entries: [], skipped: [] })
+  };
+
+  /**
+   * Hand a drop to the host.
+   *
+   * A drag from outside VS Code carries no path at all — the frame gets a
+   * `File` and nothing else — so the bytes are read here and sent along. The
+   * host still prefers a real path when one arrived and only writes a copy
+   * for the ones it could not place, which is why both shapes go together.
+   */
+  async function sendDrop(got, files) {
+    const payload = {
+      type: 'addUris',
+      uris: got.uris || [],
+      names: got.names || [],
+      types: got.types || []
+    };
+    if (files.length) {
+      try {
+        const read = await drop.readFileData(files);
+        if (read.entries.length) payload.files = read.entries;
+        if (read.skipped.length) payload.skipped = read.skipped;
+      } catch {
+        /* the host still gets the names and any paths */
       }
     }
-    return Array.from(out);
+    vscode.postMessage(payload);
   }
 
   let dragDepth = 0;
+  function showDropzone() {
+    dropzone.classList.remove('hidden');
+  }
+  function hideDropzone() {
+    dragDepth = 0;
+    dropzone.classList.add('hidden');
+  }
+
   window.addEventListener('dragenter', (e) => {
+    if (!drop.dragHasFiles(e.dataTransfer)) return;
     e.preventDefault();
     dragDepth++;
-    dropzone.classList.remove('hidden');
+    showDropzone();
   });
   window.addEventListener('dragover', (e) => {
     e.preventDefault();
+    if (!drop.dragHasFiles(e.dataTransfer)) return;
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    // Shift turns the webview into a drop target mid-drag, after `dragenter`
+    // has already gone by to some other element.
+    if (!dragDepth) {
+      dragDepth = 1;
+      showDropzone();
+    }
   });
   window.addEventListener('dragleave', () => {
     dragDepth = Math.max(0, dragDepth - 1);
     if (!dragDepth) dropzone.classList.add('hidden');
   });
+  window.addEventListener('dragend', hideDropzone);
   window.addEventListener('drop', (e) => {
+    if (!drop.dragHasFiles(e.dataTransfer)) return;
     e.preventDefault();
-    dragDepth = 0;
-    dropzone.classList.add('hidden');
-    const uris = readUris(e.dataTransfer);
-    if (uris.length) vscode.postMessage({ type: 'addUris', uris: uris });
+    hideDropzone();
+    const got = drop.readDrop(e.dataTransfer);
+    // The File objects must be taken from the event before it returns; reading
+    // their bytes is async and happens afterwards.
+    const files = drop.fileList(e.dataTransfer);
+    // Always answered: the host resolves whatever arrived, and reports a drop
+    // it could make nothing of rather than leaving it silent.
+    sendDrop(got, files);
   });
+
+  // -------------------------------------------------------------------- zoom
+  // Ctrl+wheel zooms the panel, the way an editor does. `zoom` rather than a
+  // transform so the text re-wraps at the new size instead of being stretched.
+  const ZOOM_STEPS = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+  let zoomIndex = ZOOM_STEPS.indexOf(1);
+
+  /**
+   * Keep the panel exactly as tall as the viewport.
+   *
+   * `body` is `100vh`, and whether viewport units are scaled by `zoom` differs
+   * between Chromium versions, so the result is measured rather than assumed:
+   * a height that does not match the viewport is corrected by the ratio it is
+   * off by. At zoom 1 — and anywhere `100vh` already fits — nothing is set.
+   */
+  function fitToViewport() {
+    const body = document.body;
+    body.style.height = '';
+    // A hidden panel reports no height, and there is nothing to fit.
+    if (!body.offsetHeight) return;
+    const css = parseFloat(getComputedStyle(body).height) || 0;
+    const shown = body.getBoundingClientRect().height;
+    const viewport = window.innerHeight;
+    if (!css || !shown || Math.abs(shown - viewport) <= 1) return;
+    body.style.height = css * (viewport / shown) + 'px';
+  }
+
+  function applyZoom() {
+    const factor = ZOOM_STEPS[zoomIndex];
+    document.body.style.zoom = String(factor);
+    fitToViewport();
+    try {
+      // Kept in the webview's own state, so it survives hiding the panel and
+      // reloading the window.
+      const state = vscode.getState() || {};
+      vscode.setState(Object.assign({}, state, { zoom: factor }));
+    } catch {
+      /* state is best effort */
+    }
+  }
+
+  function setZoom(index) {
+    const next = Math.max(0, Math.min(ZOOM_STEPS.length - 1, index));
+    if (next === zoomIndex) return;
+    zoomIndex = next;
+    applyZoom();
+  }
+
+  (function restoreZoom() {
+    let saved = 1;
+    try {
+      const state = vscode.getState();
+      if (state && typeof state.zoom === 'number' && isFinite(state.zoom)) saved = state.zoom;
+    } catch {
+      /* default */
+    }
+    // A saved factor need not be one of the steps, so take the nearest.
+    let best = 0;
+    for (let i = 1; i < ZOOM_STEPS.length; i++) {
+      if (Math.abs(ZOOM_STEPS[i] - saved) < Math.abs(ZOOM_STEPS[best] - saved)) best = i;
+    }
+    zoomIndex = best;
+    applyZoom();
+  })();
+
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      // Ctrl+wheel is a page-zoom gesture otherwise, which the frame ignores
+      // and the host would not see at all.
+      e.preventDefault();
+      setZoom(zoomIndex + (e.deltaY < 0 ? 1 : -1));
+    },
+    // Not passive: preventDefault above is what stops the gesture.
+    { passive: false }
+  );
+
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    if (e.key === '0') {
+      e.preventDefault();
+      setZoom(ZOOM_STEPS.indexOf(1));
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      setZoom(zoomIndex + 1);
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      setZoom(zoomIndex - 1);
+    }
+  });
+
+  // The panel is resized by dragging the sidebar; the height correction from
+  // the last zoom does not follow that on its own.
+  window.addEventListener('resize', () => fitToViewport());
 
   autoSize();
   renderChips();

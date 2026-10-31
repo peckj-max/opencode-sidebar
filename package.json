@@ -14,7 +14,8 @@
   ],
   "main": "./extension.js",
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "sync:local": "node scripts/install-local.js"
   },
   "activationEvents": [
     "onStartupFinished",
@@ -48,6 +49,10 @@
       {
         "command": "opencode.addToChat",
         "title": "OpenCode: Add Selection to Chat"
+      },
+      {
+        "command": "opencode.addFilesToChat",
+        "title": "OpenCode: Add to Chat"
       },
       {
         "command": "opencode.newSession",
@@ -85,6 +90,12 @@
         {
           "command": "opencode.addToChat",
           "when": "editorTextFocus",
+          "group": "navigation@9"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "opencode.addFilesToChat",
           "group": "navigation@9"
         }
       ]

@@ -637,6 +637,95 @@ body {
   font-weight: 600;
 }
 
+/* ---- rendered markdown: tables ---- */
+/* A table scrolls inside its own box rather than sliding the transcript
+   sideways, which in a narrow sidebar would move everything else with it. */
+
+.md-table-wrap {
+  margin: 0 0 8px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.md-table {
+  border-collapse: collapse;
+  /* Short tables fill the width; a long one keeps its natural width and
+     scrolls, so columns are not squeezed into unreadable slivers. */
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.95em;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-table th,
+.md-table td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 3px 8px;
+  text-align: left;
+  vertical-align: top;
+  /* Cells wrap on words, not mid-token: the prose rule's break-word would
+     split numbers and units apart. */
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.md-table thead th {
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.md-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent);
+}
+
+.md-table .ta-c {
+  text-align: center;
+}
+
+.md-table .ta-r {
+  text-align: right;
+}
+
+/* ---- rendered markdown: math ---- */
+/* KaTeX draws the formula and ships its own stylesheet and fonts; these rules
+   only place the result. */
+
+.prose .math-inline {
+  /* Never break a formula across lines; it is one unit. */
+  white-space: nowrap;
+}
+
+.prose .math-block {
+  margin: 8px 0;
+  padding: 2px 0;
+  /* A wide formula scrolls on its own rather than widening the transcript. */
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.prose .math-block .katex-display {
+  margin: 0;
+}
+
+.prose .math-block .katex-display > .katex {
+  /* Display maths should size with the panel's own text, not KaTeX's default. */
+  font-size: 1.08em;
+}
+
+/* A formula KaTeX could not parse: shown in place, tinted red, not hidden. */
+.prose .katex-error {
+  color: var(--vscode-errorForeground) !important;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+}
+
+.prose .math-src {
+  color: var(--vscode-errorForeground);
+  white-space: pre-wrap;
+}
+
 /* ---- tool calls ---- */
 /* A one-line summary, and behind it the labelled body: the arguments, the
    result and any exit code — the shape Claude Code gives a tool call. */
@@ -1605,7 +1694,10 @@ button.secondary:hover {
 /* -------------------------------------------------------------------- dropzone */
 
 .dropzone {
-  position: fixed;
+  /* Absolute rather than fixed: the panel is zoomed by Ctrl+wheel, and a fixed
+     overlay is positioned against the viewport, which would leave it short of
+     the panel's edges at any zoom above 100%. */
+  position: absolute;
   inset: 0;
   display: flex;
   align-items: center;

@@ -11,7 +11,34 @@ An opencode chat panel that lives in the VS Code **secondary side bar**, with ed
 - **Add selection to chat** — `Ctrl+L` (when text is selected) or `Ctrl+Alt+L` (always), plus an
   editor right-click entry. Adds the selection or whole file as a staged attachment chip.
   (`Ctrl+Shift+L` is deliberately avoided — it is VS Code's *Select All Occurrences of Find Match*.)
+- **Add files from the Explorer** — right-click one or more files/folders and choose
+  **OpenCode: Add to Chat**. You can also drop files onto the panel, but VS Code only forwards an
+  Explorer drag to a webview **while Shift is held**, so hold Shift as you drag.
+
+  A drop from outside VS Code (from the OS, or from another app) needs no modifier. A sandboxed
+  webview is never told the path of a native file — only its name and its bytes — so such a drop is
+  **staged as a copy** under the system temp directory (`opencode-sidebar-drops/`), and the chip is
+  labelled with the original name. Copies are kept for the conversation and cleared after three
+  days; the model may ask for permission to read outside the workspace, which Autopilot answers.
+  Up to 20 files are carried, 20 MB each and 60 MB in total — enough for a phone photo. A folder or
+  an empty file cannot be carried this way, and a partly successful drop warns about each item it
+  left behind.
 - **Open referenced files** — click a `path:line` the assistant mentions to open it in the editor.
+- **Tables render as tables** — GitHub-style pipe tables in an answer become a real table with a
+  header, borders and per-column alignment, and a wide one scrolls inside its own box rather than
+  sliding the transcript sideways. Blank lines between rows are tolerated: models often separate
+  rows that way, and the pipes used to show through as plain paragraphs.
+- **Maths renders as maths** — LaTeX in an answer is typeset by a vendored KaTeX
+  (`media/vendor/`, MIT), in the delimiters models use: `\(…\)` inline, `\[…\]` and `$$…$$` display,
+  plus single `$…$` when it does not look like a price. Fractions, `\boxed` results, `\tag`
+  equation numbers, Greek letters and `\text{}` all come out as the textbook intended, inside a
+  blockquote too. A formula still streaming in is typeset rather than shown as raw LaTeX, and a
+  command KaTeX cannot read is tinted red in place instead of blanking the answer. KaTeX's output
+  positions glyphs with style attributes, so the panel's CSP allows inline styles (scripts are still
+  nonce-only, and all model text is escaped).
+- **Zoom with the mouse** — `Ctrl` (or `Cmd`) plus the wheel zooms the whole panel in and out, and
+  `Ctrl+0` returns to 100% (`Ctrl+=` and `Ctrl+-` also work). The level is remembered across
+  reloads. `Ctrl` is used because a plain wheel still scrolls the transcript.
 - **A transcript that shows the work** — the content area follows the Claude Code extension's
   rendering. Every block of an assistant message gets its own row and its own dot, in the order the
   model produced them: a collapsed **Thinking** disclosure that reads "Thought for 12s" and holds
