@@ -205,6 +205,19 @@ class Chat {
     };
   }
 
+  /**
+   * Start a fresh conversation without creating anything.
+   *
+   * The `+` button only empties the panel: a session is created when the first
+   * prompt is sent (`send()` → `ensureSession()`), so pressing `+` never leaves a
+   * blank "(untitled)" entry in the history.
+   */
+  async forgetSession() {
+    this.sessionId = null;
+    await this.memento.update(SESSION_KEY, null);
+    await this.memento.update(SESSION_DIR_KEY, null);
+  }
+
   /** Delete a session; clears the current id when that session was the one. */
   async deleteSession(id) {
     await this.server.request('DELETE', `/api/session/${id}`);

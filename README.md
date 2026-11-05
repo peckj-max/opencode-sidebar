@@ -235,7 +235,9 @@ defaults to a well-known value, so change `opencode.server.password` before doin
 ## Commands
 
 - `OpenCode: Add Selection to Chat`
-- `OpenCode: New Session`
+- `OpenCode: New Session` — empties the panel without creating anything; the
+  session is made when the first prompt is sent, so pressing `+` any number of
+  times never leaves a blank `(untitled)` entry in the history.
 - `OpenCode: Restart Server`
 - `OpenCode: Show Server Address & Password` — reveals the running server's URL and copies its password
 - `OpenCode: Open Web UI in Browser`

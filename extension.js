@@ -1328,8 +1328,11 @@ async function addFilesToChat(first, selected) {
 
 async function newSession() {
   await ensureStarted();
-  await chat.newSession();
-  // The new session carries the composer's standing choice; keep the pickers on it.
+  // Nothing is created here: `+` only empties the panel, and the session is made
+  // when the first prompt is sent (Chat.send → ensureSession). That is what keeps
+  // repeated clicks from leaving blank "(untitled)" entries in the history.
+  await chat.forgetSession();
+  // The composer keeps its standing agent/model; the next session starts with it.
   postSelection({ agent: chat.defaultAgent, model: chat.defaultModelRef });
   provider.post({ type: 'clear' });
   resetAgents();
@@ -1338,6 +1341,7 @@ async function newSession() {
   provider.post({ type: 'session-title', title: '' });
   sendContext();
   await postSessions();
+  log('[ext] + pressed; a new session starts with the next prompt');
 }
 
 const PIN_KEY = 'opencode.pinnedSessions';
@@ -1832,5 +1836,5 @@ class ChatViewProvider {
 module.exports = {
   activate,
   deactivate,
-  __test: { describeSkip, resolveDrop, addUris, resolveDroppedPath, resolveDroppedName, writeDropCopy }
+  __test: { describeSkip, resolveDrop, addUris, resolveDroppedPath, resolveDroppedName, writeDropCopy, newSession }
 };

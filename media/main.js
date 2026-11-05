@@ -1001,10 +1001,11 @@
 
   const PER_MTOK = 'per 1M tokens';
 
-  /** Two decimals, which is what prices are quoted in; more only when tiny. */
+  /** Prices are quoted to the cent, and to more digits only when they are tiny. */
   function money(n) {
     if (typeof n !== 'number' || !isFinite(n)) return '?';
-    if (n >= 0.01) return n.toFixed(2);
+    if (n >= 0.1) return n.toFixed(2);
+    // A cache read is a fraction of a cent, so two decimals would round it away.
     return String(Number(n.toPrecision(2)));
   }
 
@@ -1367,7 +1368,7 @@
     return (Number(n) || 0).toLocaleString();
   }
 
-  function money(usd) {
+  function money4(usd) {
     const v = Number(usd) || 0;
     // Four decimals: a single day of light use is often well under a cent.
     return '$' + v.toFixed(4);
@@ -1414,7 +1415,7 @@
       cell(tr, compactCount(d.inputTokens), 'c-num', exactCount(d.inputTokens) + ' input tokens');
       cell(tr, compactCount(d.outputTokens), 'c-num', exactCount(d.outputTokens) + ' output tokens');
       cell(tr, compactCount(d.cachedTokens), 'c-num', exactCount(d.cachedTokens) + ' cached tokens');
-      cell(tr, money(d.costUsd), 'c-num');
+      cell(tr, money4(d.costUsd), 'c-num');
       body.appendChild(tr);
     }
     table.appendChild(body);
@@ -1427,7 +1428,7 @@
     cell(footRow, compactCount(t.inputTokens), 'c-num', exactCount(t.inputTokens) + ' input tokens');
     cell(footRow, compactCount(t.outputTokens), 'c-num', exactCount(t.outputTokens) + ' output tokens');
     cell(footRow, compactCount(t.cachedTokens), 'c-num', exactCount(t.cachedTokens) + ' cached tokens');
-    cell(footRow, money(t.costUsd), 'c-num');
+    cell(footRow, money4(t.costUsd), 'c-num');
     foot.appendChild(footRow);
     table.appendChild(foot);
 
@@ -2212,6 +2213,14 @@
   btnNew.addEventListener('click', () => {
     closePanels();
     setReportOpen(false);
+    // Empty the panel straight away: no session is created until the first
+    // prompt, so the host's answer would otherwise leave the old conversation
+    // on screen and the click look ignored.
+    clearMessages();
+    chips = [];
+    renderChips();
+    setBusy(false);
+    setSessionTitle('');
     vscode.postMessage({ type: 'newSession' });
   });
 
